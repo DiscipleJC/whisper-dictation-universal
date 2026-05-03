@@ -14,16 +14,19 @@ from pathlib import Path
 
 # ── Platform ──────────────────────────────────────────────────────────────────
 
-SYSTEM          = platform.system()    # Darwin | Linux | Windows
-MACHINE         = platform.machine()   # arm64  | x86_64 | AMD64
-IS_MACOS        = SYSTEM == "Darwin"
-IS_LINUX        = SYSTEM == "Linux"
-IS_WINDOWS      = SYSTEM == "Windows"
+SYSTEM           = platform.system()    # Darwin | Linux | Windows
+MACHINE          = platform.machine()   # arm64  | x86_64 | AMD64
+IS_MACOS         = SYSTEM == "Darwin"
+IS_LINUX         = SYSTEM == "Linux"
+IS_WINDOWS       = SYSTEM == "Windows"
 IS_APPLE_SILICON = IS_MACOS and MACHINE == "arm64"
 
 PROJECT_DIR = Path(__file__).parent.resolve()
 VENV_DIR    = PROJECT_DIR / "venv"
-DICTATE_PY  = PROJECT_DIR / "dictate.py"
+
+# Set after choose_backend() — Apple Silicon fixed to mlx script
+DICTATE_SCRIPT = PROJECT_DIR / "dictate_macos_m.py"
+BACKEND        = "mlx"   # mlx | faster_whisper | openai_api
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -61,34 +64,82 @@ def check_python():
         fail(f"Python 3.10+ required. Found: {v.major}.{v.minor}")
     ok(f"Python {v.major}.{v.minor}.{v.micro}")
 
-# ── Step 2: Platform ──────────────────────────────────────────────────────────
+# ── Step 2: Platform + backend choice ────────────────────────────────────────
 
-def check_platform():
-    section("Step 2 — Platform detection")
+def choose_backend():
+    global DICTATE_SCRIPT, BACKEND
+
+    section("Step 2 — Platform & backend")
+
     if IS_APPLE_SILICON:
         ok("macOS Apple Silicon (M-series)")
         info("Backend: mlx_whisper — optimised for Apple Neural Engine")
-    elif IS_MACOS:
+        DICTATE_SCRIPT = PROJECT_DIR / "dictate_macos_m.py"
+        BACKEND = "mlx"
+        return
+
+    if IS_MACOS:
         ok("macOS Intel")
-        info("Backend: faster-whisper (CPU)")
-        warn("Transcription is slower without Apple Silicon — consider 'tiny' or 'base' model")
+        warn("Apple Neural Engine not available — choose transcription backend:")
     elif IS_LINUX:
         ok("Linux")
-        info("Backend: faster-whisper")
-        info("NVIDIA GPU detected automatically by faster-whisper if CUDA is installed")
+        info("NVIDIA GPU is used automatically if CUDA is installed")
     elif IS_WINDOWS:
         ok("Windows")
-        info("Backend: faster-whisper")
-        warn("For GPU acceleration install CUDA 11.x + cuDNN 8.x before this installer")
+        warn("For GPU acceleration install CUDA 11.x + cuDNN 8.x first")
     else:
         fail(f"Unsupported platform: {SYSTEM} / {MACHINE}")
+
+    print()
+    print("  Choose transcription backend:")
+    print("    [1] Local model (faster-whisper) — free, private, works offline")
+    print("         Needs a decent CPU; first run downloads ~500MB model")
+    print("    [2] OpenAI Whisper API — fast on any hardware, ~$0.006/min")
+    print("         Requires internet + OpenAI API key")
+    print()
+
+    while True:
+        choice = input("  Enter choice [1]: ").strip() or "1"
+        if choice in ("1", "2"):
+            break
+        print("  Please enter 1 or 2.")
+
+    if choice == "1":
+        info("Backend: faster-whisper (local)")
+        DICTATE_SCRIPT = PROJECT_DIR / "dictate_faster_whisper.py"
+        BACKEND = "faster_whisper"
+    else:
+        info("Backend: OpenAI Whisper API (cloud)")
+        DICTATE_SCRIPT = PROJECT_DIR / "dictate_openai_api.py"
+        BACKEND = "openai_api"
+        _prompt_api_key()
+
+def _prompt_api_key():
+    env_path = PROJECT_DIR / ".env"
+
+    # Check if key already saved
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            if line.startswith("OPENAI_API_KEY=") and len(line) > 20:
+                ok("OpenAI API key already saved in .env")
+                return
+
+    print()
+    print("  Enter your OpenAI API key (starts with sk-):")
+    key = input("  API key: ").strip()
+    if not key.startswith("sk-"):
+        warn("Key doesn't start with 'sk-' — saved anyway, check if correct")
+
+    env_path.write_text(f"OPENAI_API_KEY={key}\n")
+    os.chmod(env_path, 0o600)
+    ok(f"API key saved to {env_path}")
 
 # ── Step 3: Virtual environment ───────────────────────────────────────────────
 
 def create_venv():
     section("Step 3 — Virtual environment")
     if VENV_DIR.exists():
-        warn(f"venv already exists — skipping creation")
+        warn("venv already exists — skipping creation")
         warn(f"Delete {VENV_DIR} and re-run to start fresh")
     else:
         run([sys.executable, "-m", "venv", str(VENV_DIR)])
@@ -101,16 +152,14 @@ def install_packages():
 
     common = ["sounddevice", "pynput", "pyperclip", "numpy"]
 
-    if IS_APPLE_SILICON:
-        backend = ["mlx-whisper"]
-    else:
-        backend = ["faster-whisper"]
-        if not IS_APPLE_SILICON:
-            info("Note: dictate.py uses mlx_whisper API (Apple Silicon only).")
-            info("On this platform you will need a platform-specific dictate script.")
-            info("See: https://github.com/DiscipleJC/whisper-dictation")
+    if BACKEND == "mlx":
+        backend_pkgs = ["mlx-whisper"]
+    elif BACKEND == "faster_whisper":
+        backend_pkgs = ["faster-whisper"]
+    else:  # openai_api
+        backend_pkgs = ["openai"]
 
-    packages = common + backend
+    packages = common + backend_pkgs
     info(f"Packages: {', '.join(packages)}")
 
     run([str(pip()), "install", "--upgrade", "pip"], capture=True)
@@ -130,7 +179,7 @@ def _macos_plist_content():
     <key>ProgramArguments</key>
     <array>
         <string>{python()}</string>
-        <string>{DICTATE_PY}</string>
+        <string>{DICTATE_SCRIPT}</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -179,7 +228,7 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart={python()} {DICTATE_PY}
+ExecStart={python()} {DICTATE_SCRIPT}
 WorkingDirectory={PROJECT_DIR}
 Restart=on-failure
 RestartSec=3
@@ -201,7 +250,7 @@ def setup_linux():
     ok("systemd service installed and started")
 
 def _windows_bat_content():
-    return f'@echo off\nstart /min "" "{python()}" "{DICTATE_PY}"\n'
+    return f'@echo off\nstart /min "" "{python()}" "{DICTATE_SCRIPT}"\n'
 
 def setup_windows():
     section("Step 5 — Windows autostart")
@@ -260,6 +309,7 @@ def print_summary():
     section("Done — Whisper Dictation installed")
     print()
     print("  Hotkey : Hold RIGHT OPTION (Alt) → speak → release → text appears")
+    print(f"  Script : {DICTATE_SCRIPT.name}")
     print()
     if IS_MACOS:
         print("  Logs   : ~/Library/Logs/whisper-dictation.log")
@@ -279,11 +329,11 @@ def print_summary():
 def main():
     print()
     print("=" * 52)
-    print("  Whisper Dictation — Universal Installer v1.0")
+    print("  Whisper Dictation — Universal Installer v1.1")
     print("=" * 52)
 
     check_python()
-    check_platform()
+    choose_backend()
     create_venv()
     install_packages()
     setup_autostart()

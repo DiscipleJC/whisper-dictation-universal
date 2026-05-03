@@ -35,9 +35,11 @@ MODELS = {
     "openai":  "whisper-1",
 }
 
+# Universal tech vocabulary — helps Whisper recognize proper nouns across all 99 languages
 INITIAL_PROMPT = (
-    "Привет! Как дела? Всё хорошо. "
-    "Claude Code, API, Python, GitHub, Telegram, AI-Crew, whisper-transcriber."
+    "Claude Code, OpenAI, Python, JavaScript, TypeScript, GitHub, Docker, "
+    "Kubernetes, API, REST, JSON, SQL, React, Node.js, Linux, macOS, Windows, "
+    "Telegram, Slack, Zoom, YouTube, GPT, LLM, AI, ML, CPU, GPU, SSD, RAM."
 )
 
 # ── ffmpeg helpers ────────────────────────────────────────────────────────────
@@ -176,7 +178,8 @@ examples:
     )
     parser.add_argument("input", help="Audio or video file")
     parser.add_argument("--language", "-l", default=None,
-                        help="Language code: ru, en, uk ... (default: auto-detect)")
+                        help="ISO language code: en, ru, uk, zh, de, fr, es, ja, ko, ar ... "
+                             "All 99 Whisper languages supported. Default: auto-detect.")
     parser.add_argument("--format", "-f", action="append", dest="formats",
                         choices=["txt", "srt", "vtt", "json"], default=None,
                         help="Output format (repeatable). Default: txt + srt")
@@ -215,7 +218,7 @@ examples:
     print("=" * 50)
     print(f"  File    : {input_path.name}")
     print(f"  Backend : {backend}  ({model.split('/')[-1]})")
-    print(f"  Language: {args.language or 'auto-detect'}")
+    print(f"  Language: {args.language or 'auto-detect (99 languages)'}")
     print(f"  Formats : {', '.join(formats)}")
     print("=" * 50)
 

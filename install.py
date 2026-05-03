@@ -27,6 +27,7 @@ VENV_DIR    = PROJECT_DIR / "venv"
 # Set after choose_backend() — Apple Silicon fixed to mlx script
 DICTATE_SCRIPT = PROJECT_DIR / "dictate_macos_m.py"
 BACKEND        = "mlx"   # mlx | faster_whisper | openai_api
+MODEL          = "mlx-community/whisper-medium-mlx-4bit"  # updated per backend
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -67,7 +68,7 @@ def check_python():
 # ── Step 2: Platform + backend choice ────────────────────────────────────────
 
 def choose_backend():
-    global DICTATE_SCRIPT, BACKEND
+    global DICTATE_SCRIPT, BACKEND, MODEL
 
     section("Step 2 — Platform & backend")
 
@@ -76,6 +77,7 @@ def choose_backend():
         info("Backend: mlx_whisper — optimised for Apple Neural Engine")
         DICTATE_SCRIPT = PROJECT_DIR / "dictate_macos_m.py"
         BACKEND = "mlx"
+        MODEL   = "mlx-community/whisper-medium-mlx-4bit"
         return
 
     if IS_MACOS:
@@ -108,10 +110,12 @@ def choose_backend():
         info("Backend: faster-whisper (local)")
         DICTATE_SCRIPT = PROJECT_DIR / "dictate_faster_whisper.py"
         BACKEND = "faster_whisper"
+        MODEL   = "Systran/faster-whisper-medium"
     else:
         info("Backend: OpenAI Whisper API (cloud)")
         DICTATE_SCRIPT = PROJECT_DIR / "dictate_openai_api.py"
         BACKEND = "openai_api"
+        MODEL   = "whisper-1 (OpenAI cloud)"
         _prompt_api_key()
 
 def _prompt_api_key():
@@ -309,6 +313,7 @@ def print_summary():
     section("Done — Whisper Dictation installed")
     print()
     print("  Hotkey : Hold RIGHT OPTION (Alt) → speak → release → text appears")
+    print(f"  Model  : {MODEL}")
     print(f"  Script : {DICTATE_SCRIPT.name}")
     print()
     if IS_MACOS:

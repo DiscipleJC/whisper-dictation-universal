@@ -56,7 +56,7 @@ def _transcribe():
         language=LANGUAGE,
         no_speech_threshold=0.3,
         condition_on_previous_text=False,
-        initial_prompt="Привет! Как дела? Всё хорошо. Claude Code, API, Python, GitHub, Telegram, AI-Crew, mlx_whisper.",
+        initial_prompt="Claude Code, OpenAI, Python, JavaScript, TypeScript, GitHub, Docker, Kubernetes, API, REST, JSON, SQL, React, Node.js, Linux, macOS, Windows, Telegram, Slack, Zoom, YouTube, GPT, LLM, AI, ML, CPU, GPU, SSD, RAM.",
     )
 
     text = result["text"].strip()

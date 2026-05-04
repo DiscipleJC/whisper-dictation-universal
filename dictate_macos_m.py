@@ -64,7 +64,10 @@ def _transcribe():
         print(f"✅ {text}\n", flush=True)
         pyperclip.copy(text)
         time.sleep(0.1)
-        kb.type(text)
+        kb.press(Key.cmd)
+        kb.press('v')
+        kb.release('v')
+        kb.release(Key.cmd)
     else:
         print("⚠️  Текст не распознан\n", flush=True)
 

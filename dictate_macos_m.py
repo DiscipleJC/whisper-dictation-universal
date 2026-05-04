@@ -12,7 +12,7 @@ import sounddevice as sd
 import mlx_whisper
 import pyperclip
 from pynput import keyboard
-from pynput.keyboard import Key, Controller
+from pynput.keyboard import Key, KeyCode, Controller
 
 
 # --- Настройки ---
@@ -64,7 +64,10 @@ def _transcribe():
         print(f"✅ {text}\n", flush=True)
         pyperclip.copy(text)
         time.sleep(0.1)
-        kb.type(text)
+        _V = KeyCode.from_vk(9)  # physical 'V' key, layout-independent
+        with kb.pressed(Key.cmd):
+            kb.press(_V)
+            kb.release(_V)
     else:
         print("⚠️  Текст не распознан\n", flush=True)
 

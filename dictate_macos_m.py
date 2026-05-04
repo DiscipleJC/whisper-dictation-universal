@@ -4,6 +4,7 @@ Whisper Dictation — push-to-talk для любого приложения на
 Удерживай RIGHT OPTION → говори → отпусти → текст вставляется куда угодно
 """
 
+import subprocess
 import sys
 import time
 import threading
@@ -63,11 +64,12 @@ def _transcribe():
     if text:
         print(f"✅ {text}\n", flush=True)
         pyperclip.copy(text)
-        time.sleep(0.1)
-        kb.press(Key.cmd)
-        kb.press('v')
-        kb.release('v')
-        kb.release(Key.cmd)
+        time.sleep(0.05)
+        subprocess.run(
+            ["osascript", "-e",
+             'tell application "System Events" to keystroke "v" using command down'],
+            capture_output=True,
+        )
     else:
         print("⚠️  Текст не распознан\n", flush=True)
 

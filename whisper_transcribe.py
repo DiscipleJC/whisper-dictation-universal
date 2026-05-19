@@ -2,7 +2,7 @@
 """
 Whisper Transcriber — audio/video file transcription
 Platforms: macOS Apple Silicon, macOS Intel, Linux, Windows
-Usage: python transcribe.py <file> [options]
+Usage: python whisper_transcribe.py <file> [options]
 """
 
 import argparse
@@ -170,10 +170,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 examples:
-  python transcribe.py meeting.mp4
-  python transcribe.py lecture.mp3 --format srt
-  python transcribe.py interview.wav --language ru --format txt --format json
-  python transcribe.py video.mov --backend faster --model large-v3
+  python whisper_transcribe.py meeting.mp4
+  python whisper_transcribe.py lecture.mp3 --format srt
+  python whisper_transcribe.py interview.wav --language ru --format txt --format json
+  python whisper_transcribe.py video.mov --backend faster --model large-v3
         """,
     )
     parser.add_argument("input", help="Audio or video file")

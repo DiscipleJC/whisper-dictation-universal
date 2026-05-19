@@ -6,7 +6,10 @@ Whisper Dictation — push-to-talk для любого приложения на
 
 import sys
 import time
+import json
 import threading
+from datetime import datetime, timezone
+from pathlib import Path
 import numpy as np
 import sounddevice as sd
 import mlx_whisper
@@ -20,6 +23,7 @@ HOTKEY   = Key.alt_r                         # Правый Option (Alt)
 LANGUAGE = None                              # None = авто-детект (русский + английский вместе)
 MODEL    = "mlx-community/whisper-medium-mlx-4bit"  # medium 4-bit = качество medium, меньше памяти, чуть быстрее
 RATE     = 16000
+STATS_LOG = Path.home() / "Library" / "Logs" / "whisper-dictation-stats.jsonl"
 # -----------------
 
 kb      = Controller()
@@ -49,7 +53,10 @@ def _transcribe():
         print("⚠️  Слишком короткая запись\n", flush=True)
         return
 
+    audio_sec = audio.shape[0] / RATE
+
     print("⏳ Транскрибирую...", flush=True)
+    t0 = time.monotonic()
     result = mlx_whisper.transcribe(
         audio,
         path_or_hf_repo=MODEL,
@@ -58,10 +65,12 @@ def _transcribe():
         condition_on_previous_text=False,
         initial_prompt="Claude Code, OpenAI, Python, JavaScript, TypeScript, GitHub, Docker, Kubernetes, API, REST, JSON, SQL, React, Node.js, Linux, macOS, Windows, Telegram, Slack, Zoom, YouTube, GPT, LLM, AI, ML, CPU, GPU, SSD, RAM.",
     )
+    transcribe_sec = time.monotonic() - t0
 
     text = result["text"].strip()
     if text:
         print(f"✅ {text}\n", flush=True)
+        _log_stats(text, audio_sec, transcribe_sec, result.get("language"))
         pyperclip.copy(text)
         time.sleep(0.1)
         _V = KeyCode.from_vk(9)  # physical 'V' key, layout-independent
@@ -70,6 +79,22 @@ def _transcribe():
             kb.release(_V)
     else:
         print("⚠️  Текст не распознан\n", flush=True)
+
+
+def _log_stats(text, audio_sec, transcribe_sec, language):
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "words": len(text.split()),
+        "chars": len(text),
+        "audio_sec": round(audio_sec, 2),
+        "transcribe_sec": round(transcribe_sec, 2),
+        "language": language,
+    }
+    try:
+        with STATS_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f"⚠️  stats log failed: {e}", flush=True)
 
 
 def on_press(key):

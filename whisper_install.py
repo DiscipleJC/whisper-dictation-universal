@@ -2,7 +2,7 @@
 """
 Whisper Dictation — Universal Installer
 Supported: macOS Apple Silicon, macOS Intel, Linux, Windows
-Usage: python3 install.py
+Usage: python3 whisper_install.py
 """
 
 import sys
@@ -25,7 +25,7 @@ PROJECT_DIR = Path(__file__).parent.resolve()
 VENV_DIR    = PROJECT_DIR / "venv"
 
 # Set after choose_backend() — Apple Silicon fixed to mlx script
-DICTATE_SCRIPT = PROJECT_DIR / "dictate_macos_m.py"
+DICTATE_SCRIPT = PROJECT_DIR / "whisper_dictate_macos_m.py"
 BACKEND        = "mlx"   # mlx | faster_whisper | openai_api
 MODEL          = "mlx-community/whisper-medium-mlx-4bit"  # updated per backend
 
@@ -75,7 +75,7 @@ def choose_backend():
     if IS_APPLE_SILICON:
         ok("macOS Apple Silicon (M-series)")
         info("Backend: mlx_whisper — optimised for Apple Neural Engine")
-        DICTATE_SCRIPT = PROJECT_DIR / "dictate_macos_m.py"
+        DICTATE_SCRIPT = PROJECT_DIR / "whisper_dictate_macos_m.py"
         BACKEND = "mlx"
         MODEL   = "mlx-community/whisper-medium-mlx-4bit"
         return
@@ -113,7 +113,7 @@ def choose_backend():
         MODEL   = "Systran/faster-whisper-medium"
     else:
         info("Backend: OpenAI Whisper API (cloud)")
-        DICTATE_SCRIPT = PROJECT_DIR / "dictate_openai_api.py"
+        DICTATE_SCRIPT = PROJECT_DIR / "whisper_dictate_openai_api.py"
         BACKEND = "openai_api"
         MODEL   = "whisper-1 (OpenAI cloud)"
         _prompt_api_key()

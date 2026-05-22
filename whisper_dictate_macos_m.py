@@ -7,6 +7,7 @@ Whisper Dictation — push-to-talk + IPC daemon
 
 import http.server
 import json
+import os
 import socketserver
 import threading
 import time
@@ -28,6 +29,12 @@ STATS_LOG = Path.home() / "Library" / "Logs" / "whisper-dictation-stats.jsonl"
 IPC_HOST = "127.0.0.1"
 IPC_PORT = 18765
 
+# Освобождает PortAudio handle: после IDLE_RESTART_SEC без записей процесс
+# завершает себя через os._exit(), LaunchAgent (KeepAlive=true) поднимает
+# свежий PID с чистым Core Audio session — оранжевый индикатор гаснет.
+IDLE_RESTART_SEC = 60
+WATCHDOG_PERIOD_SEC = 5
+
 INITIAL_PROMPT = (
     "Claude Code, OpenAI, Python, JavaScript, TypeScript, GitHub, Docker, "
     "Kubernetes, API, REST, JSON, SQL, React, Node.js, Linux, macOS, Windows, "
@@ -45,6 +52,7 @@ class Daemon:
         self._privacy_mode = True  # default ON — стрим открыт только во время записи
         # При privacy_mode=True _open_persistent_stream() ничего не делает,
         # стрим откроется по требованию в start_recording().
+        self._last_activity = time.monotonic()
 
     @property
     def state(self):
@@ -97,11 +105,15 @@ class Daemon:
 
     def set_privacy_mode(self, enabled):
         self._privacy_mode = bool(enabled)
+        self._last_activity = time.monotonic()
         if self._state == "idle":
             if self._privacy_mode:
                 self._close_stream()
             else:
                 self._open_persistent_stream()
+
+    def seconds_since_activity(self):
+        return time.monotonic() - self._last_activity
 
     def start_recording(self):
         if self._state != "idle":
@@ -112,6 +124,7 @@ class Daemon:
             print("⚠️  Запись не стартовала (PortAudio error)", flush=True)
             return False
         self._state = "recording"
+        self._last_activity = time.monotonic()
         print("🎙  Запись...", flush=True)
         return True
 
@@ -165,6 +178,7 @@ class Daemon:
                 self.kb.release(v_key)
         finally:
             self._state = "idle"
+            self._last_activity = time.monotonic()
             if self._privacy_mode:
                 self._close_stream()
 
@@ -238,8 +252,34 @@ class IPCHandler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/privacy/off":
             daemon.set_privacy_mode(False)
             self._respond(200, {"ok": True, "privacy_mode": False})
+        elif self.path == "/restart":
+            self._respond(200, {"ok": True})
+            # Defer exit so the HTTP response is fully flushed to the caller.
+            def _exit_soon():
+                time.sleep(0.15)
+                print("🔄 /restart received — exiting for clean mic release", flush=True)
+                os._exit(0)
+            threading.Thread(target=_exit_soon, daemon=True).start()
         else:
             self._respond(404, {"error": "not found"})
+
+
+def start_idle_watchdog():
+    """После IDLE_RESTART_SEC без записей завершает процесс через os._exit().
+    LaunchAgent (KeepAlive=true) поднимает свежий PID с чистым Core Audio session,
+    оранжевый индикатор гаснет."""
+    def loop():
+        while True:
+            time.sleep(WATCHDOG_PERIOD_SEC)
+            if daemon.state != "idle":
+                continue
+            if daemon.seconds_since_activity() >= IDLE_RESTART_SEC:
+                print(
+                    f"⏰ idle {IDLE_RESTART_SEC}s — restart for clean mic release",
+                    flush=True,
+                )
+                os._exit(0)
+    threading.Thread(target=loop, daemon=True).start()
 
 
 def start_ipc_server():
@@ -273,6 +313,8 @@ print(f"  Hotkey : RIGHT OPTION (push-to-talk)")
 print(f"  Язык   : {LANGUAGE or 'авто-детект'}")
 print(f"  Модель : {MODEL.split('/')[-1]}")
 start_ipc_server()
+start_idle_watchdog()
+print(f"  Idle restart: {IDLE_RESTART_SEC}s")
 print("=" * 45)
 print("  Ctrl+C для выхода\n")
 

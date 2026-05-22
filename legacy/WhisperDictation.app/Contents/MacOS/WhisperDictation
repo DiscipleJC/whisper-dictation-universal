@@ -1,0 +1,18 @@
+#!/bin/bash
+# Launcher for Whisper Dictation menubar app.
+# Resolves the project directory next to the .app bundle, then runs the
+# python script from the venv.
+
+set -euo pipefail
+
+# .app/Contents/MacOS/WhisperDictation → ../../../  = project root
+BUNDLE_MACOS_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$BUNDLE_MACOS_DIR/../../.." && pwd)"
+
+PYTHON="$PROJECT_DIR/venv/bin/python3"
+SCRIPT="$PROJECT_DIR/whisper_dictate_menubar.py"
+LOG="$HOME/Library/Logs/whisper-dictation-menubar.log"
+
+mkdir -p "$(dirname "$LOG")"
+
+exec "$PYTHON" "$SCRIPT" >> "$LOG" 2>&1

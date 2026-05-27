@@ -220,6 +220,41 @@ After granting — restart the script or LaunchAgent (`launchctl unload` + `laun
 
 ---
 
+## Input Monitoring permission (macOS Sonoma/Sequoia/Tahoe — required for LaunchAgent)
+
+> **Critical** on macOS 14+ (Sonoma and newer). Without this, the LaunchAgent will run with no errors but the hotkey is **silently ignored**.
+
+In addition to Accessibility, recent macOS versions also require **Input Monitoring** for any process that captures keyboard events via pynput. The setup mirrors Accessibility exactly:
+
+### Running from terminal
+
+Grant Input Monitoring to **Terminal** (same path as for Accessibility):
+
+```
+System Settings → Privacy & Security → Input Monitoring → + → add Terminal
+```
+
+### Running as LaunchAgent
+
+Grant Input Monitoring to the **same Homebrew Python.app** you used for Accessibility:
+
+1. Open `System Settings → Privacy & Security → Input Monitoring`
+2. Click `+`
+3. Press `Cmd+Shift+G` and paste the path:
+   ```
+   /opt/homebrew/Cellar/python@3.12/<version>/Frameworks/Python.framework/Versions/3.12/Resources/Python.app
+   ```
+4. Click Open, make sure the checkbox is **on**
+5. Reload the LaunchAgent:
+   ```bash
+   launchctl unload ~/Library/LaunchAgents/com.whisper-dictation.plist
+   launchctl load ~/Library/LaunchAgents/com.whisper-dictation.plist
+   ```
+
+> **Both Accessibility AND Input Monitoring are required** for the LaunchAgent path. Granting only Accessibility is the most common cause of "hotkey silently does nothing" after Accessibility is correctly configured.
+
+---
+
 ## Microphone permission (macOS)
 
 On first use macOS will ask for microphone access — click **Allow**.  
@@ -299,9 +334,14 @@ launchctl list | grep whisper-dictation
 # Second column = 0 means running successfully
 ```
 
-### Critical step (Accessibility)
+### Critical step — TWO permissions required
 
-> ⚠️ Grant Accessibility permission to the **Homebrew Python.app**, not Terminal. LaunchAgent runs `launchd → python3.12` directly and does **not** inherit Terminal's permissions. See [Accessibility permission](#accessibility-permission-macos) above for the exact Python.app path and steps. If you skip this, the LaunchAgent will run but the hotkey will silently do nothing.
+> ⚠️ The LaunchAgent needs **both** of these permissions granted to the **Homebrew Python.app** (not Terminal). Granting only one is the #1 cause of "everything looks fine but hotkey does nothing":
+>
+> 1. **Accessibility** — see [Accessibility permission](#accessibility-permission-macos) for path and steps
+> 2. **Input Monitoring** — see [Input Monitoring permission](#input-monitoring-permission-macos-sonomasequoiatahoe--required-for-launchagent) (required on macOS 14+)
+>
+> Both paths point to the same Python.app file. After granting both, reload the LaunchAgent (`launchctl unload` + `launchctl load`).
 
 ### Management
 
@@ -424,6 +464,18 @@ Fix: grant Accessibility to the Homebrew **Python.app** specifically (see [Acces
 launchctl unload ~/Library/LaunchAgents/com.whisper-dictation.plist
 launchctl load ~/Library/LaunchAgents/com.whisper-dictation.plist
 ```
+
+### Hotkey doesn't catch — Accessibility is granted, error log is empty, but nothing happens
+
+You have Python.app in Accessibility with the checkbox ON, the LaunchAgent is running (`launchctl list | grep whisper-dictation` shows status `0`), and `~/Library/Logs/whisper-dictation.error.log` has no `not trusted!` messages. But pressing the hotkey produces nothing — no log entries, no recording.
+
+**Most likely cause on macOS Sonoma/Sequoia/Tahoe: missing Input Monitoring permission.** pynput on macOS 14+ requires **both** Accessibility AND Input Monitoring. Accessibility alone is not enough.
+
+Fix: grant Input Monitoring to the **same Python.app** path (see [Input Monitoring permission](#input-monitoring-permission-macos-sonomasequoiatahoe--required-for-launchagent)). Then reload the LaunchAgent.
+
+**Diagnostic trick — foreground test:** Stop the LaunchAgent (`launchctl unload ...`), then run the script directly in your terminal (`source venv/bin/activate; python whisper_dictate_macos_m.py`). If the hotkey **works in foreground** but **not as LaunchAgent**, the issue is permissions for Python.app specifically — Terminal already has these system-wide permissions, while LaunchAgent runs Python directly and needs them granted to Python.app.
+
+**Toggle trick (if both permissions are granted but still doesn't work):** macOS occasionally "sticks" permissions in an inconsistent state. Toggle Python OFF in Accessibility (or Input Monitoring), wait 5 seconds, toggle it back ON, then reload the LaunchAgent.
 
 ### No microphone input / silence detected
 

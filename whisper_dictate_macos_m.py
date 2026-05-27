@@ -325,7 +325,11 @@ start_ipc_server()
 start_idle_watchdog()
 print(f"  Idle restart: {IDLE_RESTART_SEC}s")
 print("=" * 45)
-print("  Ctrl+C для выхода\n")
+print("  Ctrl+C для выхода")
+print()
+print("  ℹ️  Hotkey not working? Verify BOTH permissions for Python:")
+print("     System Settings → Privacy & Security → Accessibility AND Input Monitoring")
+print()
 
 with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
     listener.join()

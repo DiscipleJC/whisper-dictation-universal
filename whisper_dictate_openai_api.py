@@ -56,7 +56,11 @@ print(f"  Language: {LANGUAGE or 'auto-detect'}")
 print(f"  Backend : OpenAI whisper-1 (cloud)")
 print("=" * 48)
 print("  Cost: ~$0.006 / minute of audio")
-print("  Ctrl+C to quit.\n")
+print("  Ctrl+C to quit.")
+print()
+print("  ℹ️  Hotkey not working? Verify BOTH permissions for Python:")
+print("     System Settings → Privacy & Security → Accessibility AND Input Monitoring")
+print()
 
 kb      = Controller()
 _active = False

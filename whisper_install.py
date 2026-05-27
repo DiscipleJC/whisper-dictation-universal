@@ -287,7 +287,38 @@ def setup_autostart():
     elif IS_WINDOWS:
         setup_windows()
 
-# ── Step 6: Accessibility (macOS) ─────────────────────────────────────────────
+# ── Step 6/7: Accessibility + Input Monitoring (macOS) ────────────────────────
+
+def _find_python_app():
+    """Locate the Homebrew Python.app bundle that LaunchAgent will use."""
+    import glob
+    pattern = ("/opt/homebrew/Cellar/python@3.12/*/Frameworks/"
+               "Python.framework/Versions/3.12/Resources/Python.app")
+    matches = glob.glob(pattern)
+    return matches[0] if matches else None
+
+
+def _try(cmd, **kwargs):
+    """Run a command, ignore failures. Used for best-effort UX helpers."""
+    try:
+        subprocess.run(cmd, check=False, **kwargs)
+    except Exception:
+        pass
+
+
+def _ux_assist(python_app, pane_url, pane_name):
+    """Best-effort: copy path to clipboard, open System Settings pane,
+    reveal Python.app in Finder. All optional, fail silently."""
+    if python_app:
+        _try(["pbcopy"], input=python_app.encode())
+        print(f"  ✓ Python.app path copied to clipboard")
+        print(f"     ({python_app})")
+    _try(["open", pane_url])
+    print(f"  ✓ Opened System Settings → {pane_name}")
+    if python_app:
+        _try(["open", "-R", python_app])
+        print(f"  ✓ Revealed Python.app in Finder — drag-and-drop works too")
+
 
 def guide_accessibility():
     if not IS_MACOS:
@@ -295,24 +326,52 @@ def guide_accessibility():
 
     section("Step 6 — Accessibility permission (macOS)")
 
-    import glob
-    pattern = ("/opt/homebrew/Cellar/python@3.12/*/Frameworks/"
-               "Python.framework/Versions/3.12/Resources/Python.app")
-    matches = glob.glob(pattern)
-    python_app = matches[0] if matches else None
+    python_app = _find_python_app()
 
     print()
     print("  pynput needs Accessibility access to monitor the keyboard.")
     print()
-    print("  Open:  System Settings → Privacy & Security → Accessibility → +")
-    if python_app:
-        print(f"\n  Add this path (Cmd+Shift+G in the file picker):")
-        print(f"  {python_app}")
-    else:
-        print("  Add: /opt/homebrew/Cellar/python@3.12/<version>/")
-        print("       Frameworks/Python.framework/Versions/3.12/Resources/Python.app")
+
+    _ux_assist(
+        python_app,
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+        "Privacy & Security → Accessibility",
+    )
+
     print()
-    print("  After adding — restart the agent:")
+    print("  In the Accessibility list:")
+    print("    1. Click +")
+    print("    2. Press Cmd+V (path is already in clipboard)")
+    print("       — OR drag Python.app from the Finder window")
+    print("       — OR press Cmd+Shift+G and paste the path")
+    print("    3. Click Open, make sure the checkbox is ON")
+
+
+def guide_input_monitoring():
+    if not IS_MACOS:
+        return
+
+    section("Step 7 — Input Monitoring permission (macOS 14+)")
+
+    python_app = _find_python_app()
+
+    print()
+    print("  CRITICAL on macOS Sonoma/Sequoia/Tahoe (14+):")
+    print("  pynput needs Input Monitoring permission IN ADDITION to Accessibility.")
+    print("  Without it the LaunchAgent runs but the hotkey is silently ignored.")
+    print()
+
+    _ux_assist(
+        python_app,
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+        "Privacy & Security → Input Monitoring",
+    )
+
+    print()
+    print("  Same procedure as Accessibility — add the same Python.app path,")
+    print("  make sure the checkbox is ON.")
+    print()
+    print("  After granting BOTH permissions — reload the agent:")
     print("  launchctl unload ~/Library/LaunchAgents/com.whisper-dictation.plist")
     print("  launchctl load   ~/Library/LaunchAgents/com.whisper-dictation.plist")
 
@@ -352,6 +411,7 @@ def main():
     install_packages()
     setup_autostart()
     guide_accessibility()
+    guide_input_monitoring()
     print_summary()
 
 if __name__ == "__main__":

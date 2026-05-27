@@ -42,7 +42,11 @@ print("=" * 48)
 print("  Loading model — first run downloads it...")
 
 model = WhisperModel(MODEL, device=DEVICE, compute_type=COMPUTE)
-print("  Model ready. Ctrl+C to quit.\n")
+print("  Model ready. Ctrl+C to quit.")
+print()
+print("  ℹ️  Hotkey not working? Verify BOTH permissions for Python:")
+print("     System Settings → Privacy & Security → Accessibility AND Input Monitoring")
+print()
 
 kb      = Controller()
 _active = False

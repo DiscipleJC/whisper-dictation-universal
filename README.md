@@ -301,7 +301,7 @@ launchctl list | grep whisper-dictation
 
 ### Critical step (Accessibility)
 
-> ⚠️ Grant Accessibility permission to the **Python venv binary**, not Terminal. LaunchAgent runs `launchd → python3.12` and does **not** inherit Terminal's permissions. See [Accessibility permission](#accessibility-permission-macos) above for the exact path and steps. If you skip this, the script will run but the hotkey will silently do nothing.
+> ⚠️ Grant Accessibility permission to the **Homebrew Python.app**, not Terminal. LaunchAgent runs `launchd → python3.12` directly and does **not** inherit Terminal's permissions. See [Accessibility permission](#accessibility-permission-macos) above for the exact Python.app path and steps. If you skip this, the LaunchAgent will run but the hotkey will silently do nothing.
 
 ### Management
 

@@ -6,6 +6,15 @@ Usage: python3 whisper_install.py
 """
 
 import sys
+if sys.version_info < (3, 10):
+    sys.exit(
+        f"\n❌ Python 3.10+ required (the installer creates a venv with the same Python).\n"
+        f"   You ran this with Python {sys.version_info.major}.{sys.version_info.minor}.\n"
+        f"   Install a newer Python and re-run:\n"
+        f"   brew install python@3.12         # macOS\n"
+        f"   python3.12 whisper_install.py    # use the new Python explicitly\n"
+    )
+
 import os
 import platform
 import subprocess

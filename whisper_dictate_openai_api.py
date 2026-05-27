@@ -6,6 +6,14 @@ Requires: OPENAI_API_KEY in .env file
 Hotkey: RIGHT ALT → speak → release → text appears
 """
 
+import sys
+if sys.version_info < (3, 10):
+    sys.exit(
+        f"\n❌ Python 3.10+ required.\n"
+        f"   You have Python {sys.version_info.major}.{sys.version_info.minor}.\n"
+        f"   See README → Install → step 1 for upgrade instructions.\n"
+    )
+
 import io
 import time
 import wave

@@ -199,18 +199,22 @@ System Settings → Privacy & Security → Accessibility → + → add Terminal
 
 ### Running as LaunchAgent (background autostart) — IMPORTANT
 
-LaunchAgent launches Python **directly via launchd**, not through Terminal — so it does **not** inherit Terminal's Accessibility permission. You must grant it to the **Python venv binary** specifically:
+LaunchAgent launches Python **directly via launchd**, not through Terminal — so it does **not** inherit Terminal's Accessibility permission. You must grant it to the **Homebrew Python.app** specifically (the signed application bundle that macOS Accessibility can recognize):
 
-1. Open `System Settings → Privacy & Security → Accessibility`
-2. Click `+`
-3. In the file picker, press `Cmd+Shift+G` to enter a path
-4. Paste the path to your venv's Python (replace `YOU` with your username):
+1. Find your exact Python.app path — it depends on the installed version. Run in terminal:
+   ```bash
+   ls -d /opt/homebrew/Cellar/python@3.12/*/Frameworks/Python.framework/Versions/3.12/Resources/Python.app
    ```
-   /Users/YOU/whisper-dictation-universal/venv/bin/python3.12
-   ```
-5. Click Open, then make sure the checkbox is **on**
+   It will print something like `/opt/homebrew/Cellar/python@3.12/3.12.12/Frameworks/Python.framework/Versions/3.12/Resources/Python.app`. Copy that path.
+2. Open `System Settings → Privacy & Security → Accessibility`
+3. Click `+`
+4. In the file picker, press `Cmd+Shift+G` to enter a path
+5. Paste the path from step 1, click Open
+6. Make sure the checkbox is **on**
 
 After granting — restart the script or LaunchAgent (`launchctl unload` + `launchctl load`).
+
+> **Why Python.app and not `venv/bin/python3.12`?** The venv's `python3.12` is a symlink without its own code signature. macOS Accessibility matches by signed application bundle — only the Homebrew `Python.app` is reliably recognized.
 
 > Many users hit this: it works in terminal but silently fails after LaunchAgent setup. The cause is always: Accessibility granted to Terminal, but LaunchAgent runs Python directly.
 
@@ -406,7 +410,7 @@ If it points to a system Python — activate the venv and reinstall.
 Grant Accessibility access. **Which binary depends on how you run the script** — see [Accessibility permission](#accessibility-permission-macos) for details:
 
 - Running from terminal → grant to **Terminal**
-- Running as LaunchAgent → grant to your venv's **python3.12** binary at `/Users/YOU/whisper-dictation-universal/venv/bin/python3.12`
+- Running as LaunchAgent → grant to the **Homebrew Python.app** (find exact path with `ls -d /opt/homebrew/Cellar/python@3.12/*/Frameworks/Python.framework/Versions/3.12/Resources/Python.app`)
 
 Restart the script (or `launchctl unload && launchctl load` for LaunchAgent) after granting.
 
@@ -414,7 +418,7 @@ Restart the script (or `launchctl unload && launchctl load` for LaunchAgent) aft
 
 You granted Accessibility to Terminal, but LaunchAgent runs Python directly without Terminal as parent. Terminal's permission doesn't apply.
 
-Fix: add your venv's `python3.12` binary explicitly to Accessibility (see [Accessibility permission](#accessibility-permission-macos)). Then reload the LaunchAgent:
+Fix: grant Accessibility to the Homebrew **Python.app** specifically (see [Accessibility permission](#accessibility-permission-macos) for the exact path). Then reload the LaunchAgent:
 
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.whisper-dictation.plist

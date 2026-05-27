@@ -7,6 +7,25 @@ Works in: terminal, Telegram, WhatsApp, browser, Claude Code, Slack — anywhere
 
 ---
 
+## Quick Start — macOS Apple Silicon (M1–M5)
+
+```bash
+# 1. Clone
+git clone https://github.com/DiscipleJC/whisper-dictation-universal.git
+cd whisper-dictation-universal
+
+# 2. Install
+python3 whisper_install.py
+
+# 3. Run
+source venv/bin/activate
+python whisper_dictate_macos_m.py
+```
+
+> **First run:** the Whisper model (~400 MB) downloads automatically and is cached locally. This takes 1–2 minutes — wait for the `=====` header to appear before speaking.
+
+---
+
 ## How it works
 
 ```
@@ -16,6 +35,32 @@ Hold RIGHT OPTION (Alt) → speak → release
               ↓
   Text pastes into the active app
 ```
+
+---
+
+## Prerequisites
+
+### macOS
+
+**Homebrew** (if not installed):
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+**Python 3.10+** (if not installed):
+```bash
+brew install python@3.12
+```
+
+Check your version:
+```bash
+python3 --version   # must be 3.10 or higher
+```
+
+### Linux / Windows
+
+- Python 3.10+ from [python.org](https://www.python.org/downloads/)
+- Linux: `sudo apt install python3-dev portaudio19-dev` (Debian/Ubuntu)
 
 ---
 
@@ -33,27 +78,21 @@ Hold RIGHT OPTION (Alt) → speak → release
 
 ## Default model
 
-| Backend | Default model | Size | Latency |
+| Backend | Default model | Size | First-run download |
 |---|---|---|---|
-| mlx-whisper | `whisper-medium-mlx-4bit` | ~400 MB | ~0.8s |
-| faster-whisper | `medium` | ~500 MB | ~1.5s |
-| OpenAI API | `whisper-1` (cloud) | — | ~1–2s |
+| mlx-whisper | `whisper-medium-mlx-4bit` | ~400 MB | Auto, ~1–2 min |
+| faster-whisper | `medium` | ~500 MB | Auto, ~2–3 min |
+| OpenAI API | `whisper-1` (cloud) | — | — |
 
-Model is downloaded automatically on first run and cached locally.
-
----
-
-## Requirements
-
-- Python 3.10+
-- Microphone access
-- macOS: Accessibility permission (for global hotkey)
+Model is downloaded automatically on first run and cached locally. Subsequent runs start instantly.
 
 ---
 
 ## Install
 
-The universal installer detects your platform and backend automatically:
+### Option A — Universal installer (recommended)
+
+Detects your platform and backend automatically:
 
 ```bash
 python3 whisper_install.py
@@ -68,14 +107,19 @@ It will:
 
 ---
 
-## Manual install
+### Option B — Manual install
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
+pip install --upgrade pip
+```
 
+Then install packages for your backend:
+
+```bash
 # macOS Apple Silicon (M1–M5)
-pip install sounddevice pynput pyperclip numpy mlx-whisper
+pip install -r requirements.txt
 
 # macOS Intel / Linux / Windows
 pip install sounddevice pynput pyperclip numpy faster-whisper
@@ -94,6 +138,27 @@ python whisper_dictate_macos_m.py    # macOS Apple Silicon
 python dictate_faster_whisper.py     # macOS Intel / Linux / Windows
 python whisper_dictate_openai_api.py # OpenAI API backend
 ```
+
+> **First run only:** wait 1–2 minutes while the model downloads. You'll see the startup header when it's ready.
+
+---
+
+## Accessibility permission (macOS)
+
+pynput requires Accessibility access to listen for global hotkeys:
+
+```
+System Settings → Privacy & Security → Accessibility → + → add Terminal (or Python)
+```
+
+After granting — restart the script or LaunchAgent.
+
+---
+
+## Microphone permission (macOS)
+
+On first use macOS will ask for microphone access — click **Allow**.  
+If you missed it: `System Settings → Privacy & Security → Microphone → enable Terminal`
 
 ---
 
@@ -150,18 +215,6 @@ Logs:
 
 ---
 
-## Accessibility permission (macOS)
-
-pynput requires Accessibility access to listen for global hotkeys:
-
-```
-System Settings → Privacy & Security → Accessibility → + → add Terminal (or Python)
-```
-
-After granting — restart the LaunchAgent.
-
----
-
 ## File transcription
 
 Transcribe any audio or video file from the command line:
@@ -171,6 +224,12 @@ python whisper_transcribe.py <file> [options]
 ```
 
 Supported formats: `.mp3`, `.wav`, `.m4a`, `.flac`, `.ogg`, `.mp4`, `.mov`, `.avi`, `.mkv`, `.webm`
+
+> **Requires ffmpeg** for video files and non-WAV audio. Install once:
+> ```bash
+> brew install ffmpeg        # macOS
+> sudo apt install ffmpeg    # Ubuntu / Debian
+> ```
 
 ---
 

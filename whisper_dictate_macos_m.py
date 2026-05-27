@@ -5,6 +5,15 @@ Whisper Dictation — push-to-talk + IPC daemon
 - HTTP IPC on 127.0.0.1:18765 для Hammerspoon (toggle / state / privacy)
 """
 
+import sys
+if sys.version_info < (3, 10):
+    sys.exit(
+        f"\n❌ Python 3.10+ required (mlx-whisper needs 3.10+).\n"
+        f"   You have Python {sys.version_info.major}.{sys.version_info.minor}.\n"
+        f"   See README → Install → step 1 for upgrade instructions:\n"
+        f"   brew install python@3.12  &&  python3.12 -m venv venv\n"
+    )
+
 import http.server
 import json
 import os

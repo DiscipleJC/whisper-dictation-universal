@@ -10,11 +10,15 @@ Works in: terminal, Telegram, WhatsApp, browser, Claude Code, Slack — anywhere
 ## Quick Start — macOS Apple Silicon (M1–M5)
 
 ```bash
+# 0. Check Python version (must be 3.10+)
+python3 --version
+# If < 3.10:  brew install python@3.12
+
 # 1. Clone
 git clone https://github.com/DiscipleJC/whisper-dictation-universal.git
 cd whisper-dictation-universal
 
-# 2. Install
+# 2. Install (creates venv, installs deps, sets up autostart)
 python3 whisper_install.py
 
 # 3. Run
@@ -23,6 +27,8 @@ python whisper_dictate_macos_m.py
 ```
 
 > **First run:** the Whisper model (~400 MB) downloads automatically and is cached locally. This takes 1–2 minutes — wait for the `=====` header to appear before speaking.
+
+> **Hit an error?** See [Troubleshooting](#troubleshooting) below.
 
 ---
 
@@ -109,24 +115,49 @@ It will:
 
 ### Option B — Manual install
 
+> If you're not sure which path to take, use **Option A** above. Manual install is for users who want full control over each step.
+
+Run these commands **in order** — do not skip the version check or the venv verification:
+
 ```bash
+# 1. Check Python version — must be 3.10+
+python3 --version
+# If lower → install: brew install python@3.12
+
+# 2. Create virtual environment
+#    Use python3.12 explicitly if you just installed it via Homebrew
 python3 -m venv venv
+
+# 3. Activate venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
+
+# 4. Verify venv is active — the prompt should show "(venv)" prefix
+which python
+# Expected: .../whisper-dictation-universal/venv/bin/python
+# If it shows a system path → venv is not active, stop and re-activate
+
+# 5. Upgrade pip
 pip install --upgrade pip
 ```
 
-Then install packages for your backend:
+Then install dependencies for your backend (still inside the activated venv):
 
 ```bash
 # macOS Apple Silicon (M1–M5)
 pip install -r requirements.txt
+python -c "import mlx_whisper; print('OK')"
 
 # macOS Intel / Linux / Windows
 pip install sounddevice pynput pyperclip numpy faster-whisper
+python -c "import faster_whisper; print('OK')"
 
 # OpenAI API backend (any platform)
 pip install sounddevice pynput pyperclip numpy openai
+python -c "import openai; print('OK')"
 ```
+
+If the `python -c "import ..."` line prints `OK` — install succeeded.  
+If you get `ModuleNotFoundError` → see [Troubleshooting](#troubleshooting).
 
 ---
 
@@ -256,6 +287,82 @@ Supported formats: `.mp3`, `.wav`, `.m4a`, `.flac`, `.ogg`, `.mp4`, `.mov`, `.av
 Runs entirely on your machine. No API calls, no cloud, no subscriptions.
 
 OpenAI API backend: ~$0.006 per minute of audio.
+
+---
+
+## Troubleshooting
+
+### `source: no such file or directory: venv/bin/activate`
+
+You tried to activate a venv that doesn't exist yet. Create it first:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### `Defaulting to user installation because normal site-packages is not writeable`
+
+This message means your venv is **not active** — pip is installing into your global user site-packages instead.
+
+Fix: stop, activate the venv, then re-run pip:
+
+```bash
+source venv/bin/activate
+which python   # must point to ./venv/bin/python
+pip install -r requirements.txt
+```
+
+The prompt should show `(venv)` prefix when active.
+
+### `ModuleNotFoundError: No module named 'mlx_whisper'`
+
+Two common causes:
+
+**1. Python version too old.** `mlx-whisper` requires Python 3.10+ — on Python 3.9 `pip install` may silently skip it without a clear error.
+
+```bash
+python3 --version              # if 3.9 or lower → upgrade
+brew install python@3.12
+rm -rf venv                    # remove the broken venv
+python3.12 -m venv venv        # recreate with the new Python
+source venv/bin/activate
+pip install -r requirements.txt
+python -c "import mlx_whisper; print('OK')"
+```
+
+**2. Packages installed outside venv.** Check that venv is active:
+
+```bash
+which python                   # must point to ./venv/bin/python
+```
+
+If it points to a system Python — activate the venv and reinstall.
+
+### Hotkey doesn't trigger recording
+
+Grant Accessibility access:  
+`System Settings → Privacy & Security → Accessibility → + → add Terminal (or Python)`
+
+Restart the script after granting permission.
+
+### No microphone input / silence detected
+
+Grant Microphone access:  
+`System Settings → Privacy & Security → Microphone → enable Terminal`
+
+### Cleanup if you installed packages globally by accident
+
+If pip showed "Defaulting to user installation" and you want to remove those globally-installed packages:
+
+```bash
+pip3 uninstall sounddevice pynput pyperclip numpy mlx-whisper \
+  cffi pycparser pyobjc-core pyobjc-framework-Cocoa \
+  pyobjc-framework-ApplicationServices pyobjc-framework-CoreText \
+  pyobjc-framework-Quartz
+```
+
+Then redo the install correctly inside an active venv.
 
 ---
 

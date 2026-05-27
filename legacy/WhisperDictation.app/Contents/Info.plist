@@ -5,7 +5,7 @@
     <key>CFBundleExecutable</key>
     <string>WhisperDictation</string>
     <key>CFBundleIdentifier</key>
-    <string>com.maks.whisperdictation</string>
+    <string>com.discipleJC.whisperdictation</string>
     <key>CFBundleName</key>
     <string>Whisper Dictation</string>
     <key>CFBundleDisplayName</key>

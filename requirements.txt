@@ -1,0 +1,17 @@
+# Common — required for all backends
+sounddevice
+pynput
+pyperclip
+numpy
+
+# ── Backend: mlx-whisper (macOS Apple Silicon M1–M5) ──────────────────────────
+# pip install mlx-whisper
+
+# ── Backend: faster-whisper (macOS Intel / Linux / Windows) ───────────────────
+# pip install faster-whisper
+
+# ── Backend: OpenAI Whisper API (any platform) ────────────────────────────────
+# pip install openai
+
+# Run the installer to get the right packages for your platform automatically:
+# python3 whisper_install.py

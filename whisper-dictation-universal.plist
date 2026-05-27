@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent template for Whisper Dictation Universal (macOS Apple Silicon)
+  ──────────────────────────────────────────────────────────────────────────
+  The installer (whisper_install.py) generates this file automatically with
+  your real paths. Use it manually only if you need to adjust something.
+
+  Replace placeholders:
+    /PATH/TO/PROJECT   → absolute path to this repo folder
+    /PATH/TO/VENV      → absolute path to the venv folder inside the repo
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.whisper-dictation</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/PATH/TO/VENV/bin/python3</string>
+        <string>/PATH/TO/PROJECT/whisper_dictate_macos_m.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/PATH/TO/PROJECT</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USERNAME/Library/Logs/whisper-dictation.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/Library/Logs/whisper-dictation.error.log</string>
+</dict>
+</plist>

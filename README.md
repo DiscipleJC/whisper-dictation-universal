@@ -183,6 +183,12 @@ OpenAI API backend: ~$0.006 per minute of audio.
 
 ---
 
+## Related
+
+**[whisper-dictation](https://github.com/DiscipleJC/whisper-dictation)** — lightweight version for macOS Apple Silicon only. Single script, minimal setup.
+
+---
+
 ## License
 
 MIT

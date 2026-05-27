@@ -176,13 +176,33 @@ python whisper_dictate_openai_api.py # OpenAI API backend
 
 ## Accessibility permission (macOS)
 
-pynput requires Accessibility access to listen for global hotkeys:
+pynput requires Accessibility access to listen for global hotkeys.  
+**Which binary you grant access to depends on how you run the script:**
+
+### Running from terminal (foreground)
+
+Grant Accessibility to **Terminal** (or iTerm, Warp, etc):
 
 ```
-System Settings → Privacy & Security → Accessibility → + → add Terminal (or Python)
+System Settings → Privacy & Security → Accessibility → + → add Terminal
 ```
 
-After granting — restart the script or LaunchAgent.
+### Running as LaunchAgent (background autostart) — IMPORTANT
+
+LaunchAgent launches Python **directly via launchd**, not through Terminal — so it does **not** inherit Terminal's Accessibility permission. You must grant it to the **Python venv binary** specifically:
+
+1. Open `System Settings → Privacy & Security → Accessibility`
+2. Click `+`
+3. In the file picker, press `Cmd+Shift+G` to enter a path
+4. Paste the path to your venv's Python (replace `YOU` with your username):
+   ```
+   /Users/YOU/whisper-dictation-universal/venv/bin/python3.12
+   ```
+5. Click Open, then make sure the checkbox is **on**
+
+After granting — restart the script or LaunchAgent (`launchctl unload` + `launchctl load`).
+
+> Many users hit this: it works in terminal but silently fails after LaunchAgent setup. The cause is always: Accessibility granted to Terminal, but LaunchAgent runs Python directly.
 
 ---
 
@@ -243,6 +263,8 @@ The installer creates a LaunchAgent at:
 ```
 ~/Library/LaunchAgents/com.whisper-dictation.plist
 ```
+
+> ⚠️ **Critical step after setting up LaunchAgent:** grant Accessibility permission to the **Python venv binary**, not Terminal. LaunchAgent runs `launchd → python3.12` and does **not** inherit Terminal's permissions. See [Accessibility permission](#accessibility-permission-macos) above for the exact path and steps. If you skip this, the script will run but the hotkey will silently do nothing.
 
 Manage it manually:
 
@@ -341,10 +363,23 @@ If it points to a system Python — activate the venv and reinstall.
 
 ### Hotkey doesn't trigger recording
 
-Grant Accessibility access:  
-`System Settings → Privacy & Security → Accessibility → + → add Terminal (or Python)`
+Grant Accessibility access. **Which binary depends on how you run the script** — see [Accessibility permission](#accessibility-permission-macos) for details:
 
-Restart the script after granting permission.
+- Running from terminal → grant to **Terminal**
+- Running as LaunchAgent → grant to your venv's **python3.12** binary at `/Users/YOU/whisper-dictation-universal/venv/bin/python3.12`
+
+Restart the script (or `launchctl unload && launchctl load` for LaunchAgent) after granting.
+
+### Hotkey works in terminal but silently fails after LaunchAgent setup
+
+You granted Accessibility to Terminal, but LaunchAgent runs Python directly without Terminal as parent. Terminal's permission doesn't apply.
+
+Fix: add your venv's `python3.12` binary explicitly to Accessibility (see [Accessibility permission](#accessibility-permission-macos)). Then reload the LaunchAgent:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.whisper-dictation.plist
+launchctl load ~/Library/LaunchAgents/com.whisper-dictation.plist
+```
 
 ### No microphone input / silence detected
 

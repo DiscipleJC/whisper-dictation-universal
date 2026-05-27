@@ -162,6 +162,23 @@ If you missed it: `System Settings → Privacy & Security → Microphone → ena
 
 ---
 
+## OpenAI API key (cloud backend only)
+
+Skip this section if you use `mlx-whisper` or `faster-whisper` (offline backends).
+
+The `whisper_dictate_openai_api.py` script reads your key from a `.env` file in the repo root:
+
+```bash
+# Create .env in the repo root
+echo "OPENAI_API_KEY=sk-your-key-here" > .env
+```
+
+Get a key at [platform.openai.com/api-keys](https://platform.openai.com/api-keys).
+
+> `.env` is listed in `.gitignore` — your key will not be committed. Never share it or paste it into chats/issues.
+
+---
+
 ## Configuration
 
 Edit the script to change hotkey, language, or model:

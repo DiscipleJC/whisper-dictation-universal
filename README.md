@@ -163,12 +163,22 @@ If you get `ModuleNotFoundError` → see [Troubleshooting](#troubleshooting).
 
 ## Run
 
+You can run the script in **two ways**. Pick the one that fits your usage:
+
+### Option 1 — Foreground (simplest, terminal must stay open)
+
 ```bash
 source venv/bin/activate
 python whisper_dictate_macos_m.py    # macOS Apple Silicon
 python dictate_faster_whisper.py     # macOS Intel / Linux / Windows
 python whisper_dictate_openai_api.py # OpenAI API backend
 ```
+
+Terminal must stay open. Closing it stops the script. Good for testing or occasional use.
+
+### Option 2 — Background autostart (set-and-forget)
+
+LaunchAgent runs the script in background, starts automatically at every login, restarts if it crashes. **No terminal needed.** See [Autostart](#autostart-macos) below. Recommended for daily use.
 
 > **First run only:** wait 1–2 minutes while the model downloads. You'll see the startup header when it's ready.
 
@@ -258,15 +268,38 @@ Set `LANGUAGE = None` for automatic detection.
 
 ## Autostart (macOS)
 
-The installer creates a LaunchAgent at:
+Configure the script to run in background and start at every login. Once set up, you can close the terminal completely.
 
+### Quick setup — if you used the universal installer (Option A)
+
+Already done. `whisper_install.py` created the LaunchAgent automatically at `~/Library/LaunchAgents/com.whisper-dictation.plist` with your real paths. Skip to **Critical step** below.
+
+### Manual setup — if you used Manual install (Option B)
+
+From inside the repo folder with venv activated:
+
+```bash
+# 1. Generate the LaunchAgent file with your real paths
+sed -e "s|/PATH/TO/VENV|$(pwd)/venv|g" \
+    -e "s|/PATH/TO/PROJECT|$(pwd)|g" \
+    -e "s|YOUR_USERNAME|$(whoami)|g" \
+    whisper-dictation-universal.plist \
+    > ~/Library/LaunchAgents/com.whisper-dictation.plist
+
+# 2. Load it (starts now + at every future login)
+launchctl load ~/Library/LaunchAgents/com.whisper-dictation.plist
+
+# 3. Verify it's running
+launchctl list | grep whisper-dictation
+# Expected: 12345  0  com.whisper-dictation
+# Second column = 0 means running successfully
 ```
-~/Library/LaunchAgents/com.whisper-dictation.plist
-```
 
-> ⚠️ **Critical step after setting up LaunchAgent:** grant Accessibility permission to the **Python venv binary**, not Terminal. LaunchAgent runs `launchd → python3.12` and does **not** inherit Terminal's permissions. See [Accessibility permission](#accessibility-permission-macos) above for the exact path and steps. If you skip this, the script will run but the hotkey will silently do nothing.
+### Critical step (Accessibility)
 
-Manage it manually:
+> ⚠️ Grant Accessibility permission to the **Python venv binary**, not Terminal. LaunchAgent runs `launchd → python3.12` and does **not** inherit Terminal's permissions. See [Accessibility permission](#accessibility-permission-macos) above for the exact path and steps. If you skip this, the script will run but the hotkey will silently do nothing.
+
+### Management
 
 ```bash
 # Stop
@@ -281,6 +314,13 @@ Logs:
 ```
 ~/Library/Logs/whisper-dictation.log
 ~/Library/Logs/whisper-dictation.error.log
+```
+
+### Uninstall
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.whisper-dictation.plist
+rm ~/Library/LaunchAgents/com.whisper-dictation.plist
 ```
 
 ---

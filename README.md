@@ -268,3 +268,7 @@ OpenAI API backend: ~$0.006 per minute of audio.
 ## License
 
 MIT
+
+---
+
+Created by [@DiscipleJC](https://github.com/DiscipleJC)

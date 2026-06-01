@@ -53,6 +53,18 @@ INITIAL_PROMPT = (
     "Telegram, Slack, Zoom, YouTube, GPT, LLM, AI, ML, CPU, GPU, SSD, RAM."
 )
 
+# Optional local overrides — keep a personal model choice and private domain
+# vocabulary out of version control. Create local_settings.py (gitignored;
+# copy from local_settings.example.py) to set MODEL and/or extend INITIAL_PROMPT.
+try:
+    import local_settings as _local
+    MODEL = getattr(_local, "MODEL", None) or MODEL
+    _extra_prompt = getattr(_local, "EXTRA_PROMPT", "")
+    if _extra_prompt:
+        INITIAL_PROMPT = f"{INITIAL_PROMPT} {_extra_prompt}"
+except ImportError:
+    pass
+
 
 class Daemon:
     def __init__(self):

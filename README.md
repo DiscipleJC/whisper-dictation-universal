@@ -214,7 +214,9 @@ LaunchAgent launches Python **directly via launchd**, not through Terminal — s
 
 After granting — restart the script or LaunchAgent (`launchctl unload` + `launchctl load`).
 
-> **Why Python.app and not `venv/bin/python3.12`?** The venv's `python3.12` is a symlink without its own code signature. macOS Accessibility matches by signed application bundle — only the Homebrew `Python.app` is reliably recognized.
+> **Why Python.app and not `venv/bin/python3.12`?** The venv's `python3.12` is a symlink without its own code signature. macOS Accessibility matches by signed application bundle, and the Homebrew `Python.app` is the entry that is reliably recognized.
+
+> **macOS 15 Sequoia / macOS 26 Tahoe — you may need BOTH entries.** On newer macOS the system can add a *second* item to the permission list named `python3.12` (often shown with a generic/❓ icon) in addition to `Python` (the `.app`, rocket icon). On these versions, granting only `Python.app` can be **insufficient** — the hotkey stays dead until you also enable the `python3.12` entry. If pressing the hotkey does nothing after you granted `Python.app`, open the list again and toggle **both** `Python` and `python3.12` ON, in **both** Accessibility and Input Monitoring, then reload the LaunchAgent. (Reported on macOS 26 with Homebrew `python@3.12` 3.12.13.)
 
 > Many users hit this: it works in terminal but silently fails after LaunchAgent setup. The cause is always: Accessibility granted to Terminal, but LaunchAgent runs Python directly.
 

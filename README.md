@@ -296,7 +296,24 @@ MODEL    = "mlx-community/whisper-medium-mlx-4bit"  # mlx-whisper model
 | `whisper-base-mlx` | 74 MB | ~0.3s |
 | `whisper-small-mlx` | 244 MB | ~0.5s |
 | `whisper-medium-mlx-4bit` | 400 MB | ~0.8s ← default |
+| `whisper-large-v3-turbo` | 1.6 GB | ~1s |
 | `whisper-large-v3-mlx` | 1.5 GB | ~1.5s |
+
+**Want better accuracy?** On an M-Pro / M-Max (or any Mac with 16 GB+ RAM)
+switch the default to `large-v3-turbo`:
+
+```python
+MODEL = "mlx-community/whisper-large-v3-turbo"
+```
+
+It is noticeably more accurate on uncommon words, names, and word endings,
+and still runs comfortably under real time on Apple Silicon. The default
+stays `medium` so it downloads fast and runs well on entry-level Macs (8 GB);
+`turbo` is the recommended upgrade when you have the headroom.
+
+> **Tip — domain vocabulary:** if you frequently dictate specialised terms
+> (product names, jargon), add them to `INITIAL_PROMPT` in the script. Whisper
+> uses it as a hint and spells those words correctly far more often.
 
 ### Supported languages
 

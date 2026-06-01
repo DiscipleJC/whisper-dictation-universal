@@ -41,7 +41,10 @@ IPC_PORT = 18765
 # Освобождает PortAudio handle: после IDLE_RESTART_SEC без записей процесс
 # завершает себя через os._exit(), LaunchAgent (KeepAlive=true) поднимает
 # свежий PID с чистым Core Audio session — оранжевый индикатор гаснет.
-IDLE_RESTART_SEC = 60
+# 900s (15 мин): модель дольше остаётся "тёплой" в памяти → меньше холодных
+# стартов на нажатии. Освежённый процесс прогревает модель в фоне (prewarm_model),
+# поэтому холодная загрузка ~5-7s после рестарта не попадает на хоткей.
+IDLE_RESTART_SEC = 900
 WATCHDOG_PERIOD_SEC = 5
 
 INITIAL_PROMPT = (
@@ -210,6 +213,32 @@ class Daemon:
 daemon = Daemon()
 
 
+def prewarm_model():
+    """Загрузить веса модели в память в фоне при старте процесса.
+
+    mlx_whisper кэширует модель после первого transcribe(), поэтому холодная
+    загрузка (~5-7s чтения весов с диска в RAM) случается на первом вызове.
+    Прогоняем короткий тихий буфер при запуске — холодный старт уходит в фон,
+    а не на первое нажатие хоткея пользователя. Запускается и при каждом
+    перезапуске демона (idle-watchdog), пока процесс простаивает."""
+    def loop():
+        try:
+            t0 = time.monotonic()
+            silent = np.zeros(int(RATE * 0.5), dtype=np.float32)
+            mlx_whisper.transcribe(
+                silent,
+                path_or_hf_repo=MODEL,
+                language=LANGUAGE,
+                no_speech_threshold=0.3,
+                condition_on_previous_text=False,
+            )
+            print(f"  Prewarm: модель в памяти за {time.monotonic() - t0:.1f}s",
+                  flush=True)
+        except Exception as e:
+            print(f"⚠️  prewarm failed: {e}", flush=True)
+    threading.Thread(target=loop, daemon=True).start()
+
+
 def stats_today():
     if not STATS_LOG.exists():
         return {"count": 0, "words": 0}
@@ -323,6 +352,7 @@ print(f"  Язык   : {LANGUAGE or 'авто-детект'}")
 print(f"  Модель : {MODEL.split('/')[-1]}")
 start_ipc_server()
 start_idle_watchdog()
+prewarm_model()
 print(f"  Idle restart: {IDLE_RESTART_SEC}s")
 print("=" * 45)
 print("  Ctrl+C для выхода")

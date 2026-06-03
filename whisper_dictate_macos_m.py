@@ -14,6 +14,8 @@ if sys.version_info < (3, 10):
         f"   brew install python@3.12  &&  python3.12 -m venv venv\n"
     )
 
+import ctypes
+import ctypes.util
 import http.server
 import json
 import os
@@ -47,6 +49,12 @@ IPC_PORT = 18765
 IDLE_RESTART_SEC = 900
 WATCHDOG_PERIOD_SEC = 5
 
+# Pause media while recording and resume afterwards by sending the system
+# Play/Pause media key — this controls whatever is playing system-wide
+# (browser tabs like YouTube, Music, Spotify, etc.). Best-effort.
+# Set AUTO_PAUSE_MEDIA = False in local_settings.py to disable.
+AUTO_PAUSE_MEDIA = True
+
 INITIAL_PROMPT = (
     "Claude Code, OpenAI, Python, JavaScript, TypeScript, GitHub, Docker, "
     "Kubernetes, API, REST, JSON, SQL, React, Node.js, Linux, macOS, Windows, "
@@ -59,11 +67,84 @@ INITIAL_PROMPT = (
 try:
     import local_settings as _local
     MODEL = getattr(_local, "MODEL", None) or MODEL
+    AUTO_PAUSE_MEDIA = getattr(_local, "AUTO_PAUSE_MEDIA", AUTO_PAUSE_MEDIA)
     _extra_prompt = getattr(_local, "EXTRA_PROMPT", "")
     if _extra_prompt:
         INITIAL_PROMPT = f"{INITIAL_PROMPT} {_extra_prompt}"
 except ImportError:
     pass
+
+
+# Media-key support via pyobjc. Sending the system Play/Pause key controls
+# whatever is currently playing (browser, Music, Spotify). Degrades silently
+# if pyobjc is unavailable.
+try:
+    from AppKit import NSEvent as _NSEvent
+    from Quartz import CGEventPost as _CGEventPost
+    _MEDIA_OK = True
+except Exception:
+    _MEDIA_OK = False
+
+_NX_KEYTYPE_PLAY = 16
+
+
+def _send_media_play_pause():
+    """Send the system Play/Pause media key. Returns True if sent."""
+    if not _MEDIA_OK:
+        return False
+    try:
+        for down in (True, False):
+            ev = _NSEvent.otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_(
+                14, (0, 0), 0xA00 if down else 0xB00, 0, 0, None, 8,
+                (_NX_KEYTYPE_PLAY << 16) | ((0xA if down else 0xB) << 8), -1)
+            _CGEventPost(0, ev.CGEvent())
+        return True
+    except Exception:
+        return False
+
+
+# CoreAudio: is the default output device actively playing audio? Used to only
+# toggle media when something is really playing (so pressing the hotkey while
+# nothing plays won't accidentally start a paused track). Best-effort.
+try:
+    _CoreAudio = ctypes.CDLL(ctypes.util.find_library("CoreAudio"))
+except Exception:
+    _CoreAudio = None
+
+
+class _AudioAddr(ctypes.Structure):
+    _fields_ = [("sel", ctypes.c_uint32),
+                ("scope", ctypes.c_uint32),
+                ("elem", ctypes.c_uint32)]
+
+
+def _fourcc(s):
+    return (ord(s[0]) << 24) | (ord(s[1]) << 16) | (ord(s[2]) << 8) | ord(s[3])
+
+
+def _audio_is_playing():
+    """True if the default output device is actively playing audio.
+    Fails open (returns True) so media control still works if detection breaks."""
+    if _CoreAudio is None:
+        return True
+    try:
+        a1 = _AudioAddr(_fourcc('dOut'), _fourcc('glob'), 0)
+        dev = ctypes.c_uint32(0)
+        sz = ctypes.c_uint32(4)
+        if _CoreAudio.AudioObjectGetPropertyData(
+                1, ctypes.byref(a1), 0, None, ctypes.byref(sz),
+                ctypes.byref(dev)) != 0:
+            return True
+        a2 = _AudioAddr(_fourcc('gone'), _fourcc('glob'), 0)
+        run = ctypes.c_uint32(0)
+        sz2 = ctypes.c_uint32(4)
+        if _CoreAudio.AudioObjectGetPropertyData(
+                dev.value, ctypes.byref(a2), 0, None, ctypes.byref(sz2),
+                ctypes.byref(run)) != 0:
+            return True
+        return bool(run.value)
+    except Exception:
+        return True
 
 
 class Daemon:
@@ -77,6 +158,7 @@ class Daemon:
         # При privacy_mode=True _open_persistent_stream() ничего не делает,
         # стрим откроется по требованию в start_recording().
         self._last_activity = time.monotonic()
+        self._media_toggled = False
 
     @property
     def state(self):
@@ -127,6 +209,19 @@ class Daemon:
             self._stream.close()
             self._stream = None
 
+    def _pause_media(self):
+        """Pause whatever is playing — but only if audio is actually playing,
+        so the hotkey never accidentally starts a paused track."""
+        self._media_toggled = False
+        if AUTO_PAUSE_MEDIA and _audio_is_playing() and _send_media_play_pause():
+            self._media_toggled = True
+
+    def _resume_media(self):
+        """Resume by toggling Play/Pause again (only if we toggled it)."""
+        if self._media_toggled:
+            _send_media_play_pause()
+            self._media_toggled = False
+
     def set_privacy_mode(self, enabled):
         self._privacy_mode = bool(enabled)
         self._last_activity = time.monotonic()
@@ -150,6 +245,7 @@ class Daemon:
         self._state = "recording"
         self._last_activity = time.monotonic()
         print("🎙  Запись...", flush=True)
+        self._pause_media()
         return True
 
     def stop_recording(self):
@@ -205,6 +301,7 @@ class Daemon:
             self._last_activity = time.monotonic()
             if self._privacy_mode:
                 self._close_stream()
+            self._resume_media()
 
     def _log_stats(self, text, audio_sec, transcribe_sec, language):
         entry = {

@@ -16,3 +16,8 @@ MODEL = "mlx-community/whisper-large-v3-turbo"
 # Extra words appended to INITIAL_PROMPT — your own product names, jargon, etc.
 # Whisper uses it as a hint and spells these terms correctly far more often.
 EXTRA_PROMPT = "MyProduct, MyService, SomeJargon."
+
+# Pause media while dictating and resume afterwards, by sending the system
+# Play/Pause key (works with browser tabs/YouTube, Music, Spotify). Default True.
+# Set to False to leave playback untouched.
+AUTO_PAUSE_MEDIA = True

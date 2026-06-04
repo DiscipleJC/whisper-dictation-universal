@@ -2,7 +2,7 @@
 """
 Whisper Dictation — push-to-talk + IPC daemon
 - Right Option (hold) → push-to-talk
-- HTTP IPC on 127.0.0.1:18765 для Hammerspoon (toggle / state / privacy)
+- HTTP IPC on 127.0.0.1:18765 for Hammerspoon (toggle / state / privacy)
 """
 
 import sys
@@ -19,9 +19,11 @@ import ctypes.util
 import http.server
 import json
 import os
+import re
 import socketserver
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,20 +42,32 @@ STATS_LOG = Path.home() / "Library" / "Logs" / "whisper-dictation-stats.jsonl"
 IPC_HOST = "127.0.0.1"
 IPC_PORT = 18765
 
-# Освобождает PortAudio handle: после IDLE_RESTART_SEC без записей процесс
-# завершает себя через os._exit(), LaunchAgent (KeepAlive=true) поднимает
-# свежий PID с чистым Core Audio session — оранжевый индикатор гаснет.
-# 900s (15 мин): модель дольше остаётся "тёплой" в памяти → меньше холодных
-# стартов на нажатии. Освежённый процесс прогревает модель в фоне (prewarm_model),
-# поэтому холодная загрузка ~5-7s после рестарта не попадает на хоткей.
-IDLE_RESTART_SEC = 900
+# Idle self-restart (os._exit + LaunchAgent KeepAlive relaunch) is DISABLED.
+# Across sleep/wake launchd did not reliably relaunch, leaving the daemon dead
+# and the hotkey silently unresponsive. Privacy mode already closes the mic
+# stream when idle, so the restart is unnecessary. The /restart IPC endpoint
+# still allows a manual restart. Set IDLE_RESTART_SEC > 0 to re-enable.
+IDLE_RESTART_SEC = 0
 WATCHDOG_PERIOD_SEC = 5
+
+# Keep the mic stream "warm" for this many seconds after a dictation, and seed
+# each recording with a short pre-roll, so back-to-back dictations aren't clipped
+# by cold-start latency / a too-fast first word. 0 = close immediately (max
+# privacy, but the very start of fast speech can be lost). Overridable.
+KEEP_WARM_SEC = 8
+PREROLL_SEC = 0.3
 
 # Pause media while recording and resume afterwards by sending the system
 # Play/Pause media key — this controls whatever is playing system-wide
 # (browser tabs like YouTube, Music, Spotify, etc.). Best-effort.
 # Set AUTO_PAUSE_MEDIA = False in local_settings.py to disable.
 AUTO_PAUSE_MEDIA = True
+
+# Convert spoken punctuation commands ("новая строка", "запятая", "new line",
+# "comma", ...) into real punctuation in the transcript. Off by default because
+# some commands are also ordinary words (e.g. "точка зрения"). Enable in
+# local_settings.py with SPOKEN_PUNCTUATION = True.
+SPOKEN_PUNCTUATION = False
 
 INITIAL_PROMPT = (
     "Claude Code, OpenAI, Python, JavaScript, TypeScript, GitHub, Docker, "
@@ -68,6 +82,8 @@ try:
     import local_settings as _local
     MODEL = getattr(_local, "MODEL", None) or MODEL
     AUTO_PAUSE_MEDIA = getattr(_local, "AUTO_PAUSE_MEDIA", AUTO_PAUSE_MEDIA)
+    SPOKEN_PUNCTUATION = getattr(_local, "SPOKEN_PUNCTUATION", SPOKEN_PUNCTUATION)
+    KEEP_WARM_SEC = getattr(_local, "KEEP_WARM_SEC", KEEP_WARM_SEC)
     _extra_prompt = getattr(_local, "EXTRA_PROMPT", "")
     if _extra_prompt:
         INITIAL_PROMPT = f"{INITIAL_PROMPT} {_extra_prompt}"
@@ -147,6 +163,39 @@ def _audio_is_playing():
         return True
 
 
+# Spoken punctuation: phrase -> mark. Multi-word phrases must come before any
+# single word they contain (e.g. "точка с запятой" before "точка").
+_SPOKEN_PUNCT = [
+    ("новый абзац", "\n\n"), ("новая строка", "\n"),
+    ("точка с запятой", ";"), ("вопросительный знак", "?"),
+    ("восклицательный знак", "!"), ("открыть скобку", "("),
+    ("закрыть скобку", ")"), ("кавычки", '"'),
+    ("запятая", ","), ("двоеточие", ":"), ("точка", "."), ("тире", "—"),
+    ("new paragraph", "\n\n"), ("new line", "\n"),
+    ("question mark", "?"), ("exclamation mark", "!"),
+    ("exclamation point", "!"), ("full stop", "."),
+    ("open paren", "("), ("close paren", ")"),
+    ("semicolon", ";"), ("comma", ","), ("colon", ":"),
+    ("period", "."), ("dash", "—"),
+]
+_SPOKEN_PUNCT_RE = [
+    (re.compile(rf"\b{re.escape(p)}\b", re.IGNORECASE), s) for p, s in _SPOKEN_PUNCT
+]
+
+
+def _apply_spoken_punctuation(text):
+    """Replace spoken punctuation commands with real marks, then tidy spacing."""
+    if not SPOKEN_PUNCTUATION:
+        return text
+    for rx, sym in _SPOKEN_PUNCT_RE:
+        text = rx.sub(sym, text)
+    text = re.sub(r"[ \t]+([,.;:!?)»])", r"\1", text)   # no space before these
+    text = re.sub(r"([(«])[ \t]+", r"\1", text)          # no space after these
+    text = re.sub(r"[ \t]*\n[ \t]*", "\n", text)         # trim around newlines
+    text = re.sub(r"[ \t]{2,}", " ", text)               # collapse double spaces
+    return text.strip()
+
+
 class Daemon:
     def __init__(self):
         self.kb = Controller()
@@ -154,11 +203,12 @@ class Daemon:
         self._frames = []
         self._state = "idle"  # idle | recording | transcribing
         self._stream = None
-        self._privacy_mode = True  # default ON — стрим открыт только во время записи
-        # При privacy_mode=True _open_persistent_stream() ничего не делает,
-        # стрим откроется по требованию в start_recording().
+        self._privacy_mode = True  # default ON — stream open only while recording
+        # With privacy_mode=True _open_persistent_stream() is a no-op; the
+        # stream is opened on demand in start_recording().
         self._last_activity = time.monotonic()
         self._media_toggled = False
+        self._prebuf = deque(maxlen=128)
 
     @property
     def state(self):
@@ -169,9 +219,26 @@ class Daemon:
         return self._privacy_mode
 
     def _audio_callback(self, indata, frames, t, status):
+        block = indata.copy()
+        self._prebuf.append(block)
         with self._lock:
             if self._state == "recording":
-                self._frames.append(indata.copy())
+                self._frames.append(block)
+
+    def _preroll_blocks(self):
+        """Recent pre-buffer blocks (~PREROLL_SEC) so the start of speech isn't
+        clipped when the stream was already warm. Empty if the stream was cold."""
+        if PREROLL_SEC <= 0:
+            return []
+        need = int(PREROLL_SEC * RATE)
+        out, total = [], 0
+        for block in reversed(list(self._prebuf)):
+            out.append(block)
+            total += len(block)
+            if total >= need:
+                break
+        out.reverse()
+        return out
 
     def _open_persistent_stream(self):
         if self._stream is not None or self._privacy_mode:
@@ -194,7 +261,7 @@ class Daemon:
             return True
         except Exception as e:
             print(f"⚠️  PortAudio open failed: {e}", flush=True)
-            # Cleanup частично-созданного стрима
+            # Clean up a partially-created stream
             if self._stream is not None:
                 try:
                     self._stream.close()
@@ -208,6 +275,17 @@ class Daemon:
             self._stream.stop()
             self._stream.close()
             self._stream = None
+
+    def _reset_audio(self):
+        """Reinitialise PortAudio to recover a stale Core Audio session after
+        sleep (recordings come back empty). Avoids a full process restart."""
+        try:
+            self._close_stream()
+            sd._terminate()
+            sd._initialize()
+            print("🔁 Audio reinitialised (after sleep)", flush=True)
+        except Exception as e:
+            print(f"⚠️  audio reset failed: {e}", flush=True)
 
     def _pause_media(self):
         """Pause whatever is playing — but only if audio is actually playing,
@@ -238,13 +316,13 @@ class Daemon:
         if self._state != "idle":
             return False
         with self._lock:
-            self._frames = []
+            self._frames = self._preroll_blocks()
         if not self._open_stream_for_recording():
-            print("⚠️  Запись не стартовала (PortAudio error)", flush=True)
+            print("⚠️  Recording did not start (PortAudio error)", flush=True)
             return False
         self._state = "recording"
         self._last_activity = time.monotonic()
-        print("🎙  Запись...", flush=True)
+        print("🎙  Recording...", flush=True)
         self._pause_media()
         return True
 
@@ -260,20 +338,23 @@ class Daemon:
             return self.start_recording()
         if self._state == "recording":
             return self.stop_recording()
-        return False  # transcribing — игнор
+        return False  # transcribing — ignore
 
     def _do_transcribe(self):
         try:
             with self._lock:
                 frames = list(self._frames)
             if not frames:
+                print("⚠️  Empty recording — resetting audio after sleep, please repeat",
+                      flush=True)
+                self._reset_audio()
                 return
             audio = np.concatenate(frames).flatten()
             if audio.shape[0] < RATE * 0.3:
-                print("⚠️  Слишком короткая запись\n", flush=True)
+                print("⚠️  Recording too short\n", flush=True)
                 return
             audio_sec = audio.shape[0] / RATE
-            print("⏳ Транскрибирую...", flush=True)
+            print("⏳ Transcribing...", flush=True)
             t0 = time.monotonic()
             result = mlx_whisper.transcribe(
                 audio,
@@ -286,11 +367,13 @@ class Daemon:
             transcribe_sec = time.monotonic() - t0
             text = result["text"].strip()
             if not text:
-                print("⚠️  Текст не распознан\n", flush=True)
+                print("⚠️  No text recognised\n", flush=True)
                 return
+            text = _apply_spoken_punctuation(text)
             print(f"✅ {text}\n", flush=True)
             self._log_stats(text, audio_sec, transcribe_sec, result.get("language"))
-            pyperclip.copy(text)
+            # Trailing space so consecutive dictations don't run together.
+            pyperclip.copy(text + " ")
             time.sleep(0.1)
             v_key = KeyCode.from_vk(9)
             with self.kb.pressed(Key.cmd):
@@ -299,7 +382,9 @@ class Daemon:
         finally:
             self._state = "idle"
             self._last_activity = time.monotonic()
-            if self._privacy_mode:
+            # Keep the stream warm for KEEP_WARM_SEC (closed later by the
+            # keep-warm watchdog); close immediately only if keep-warm is off.
+            if self._privacy_mode and KEEP_WARM_SEC <= 0:
                 self._close_stream()
             self._resume_media()
 
@@ -323,13 +408,13 @@ daemon = Daemon()
 
 
 def prewarm_model():
-    """Загрузить веса модели в память в фоне при старте процесса.
+    """Load the model weights into memory in the background at startup.
 
-    mlx_whisper кэширует модель после первого transcribe(), поэтому холодная
-    загрузка (~5-7s чтения весов с диска в RAM) случается на первом вызове.
-    Прогоняем короткий тихий буфер при запуске — холодный старт уходит в фон,
-    а не на первое нажатие хоткея пользователя. Запускается и при каждом
-    перезапуске демона (idle-watchdog), пока процесс простаивает."""
+    mlx_whisper caches the model after the first transcribe(), so the cold load
+    (~5-7s of reading weights from disk into RAM) happens on the first call.
+    Running a short silent buffer at startup moves that cold start into the
+    background instead of onto the user's first hotkey press. Also runs on every
+    daemon restart while the process is idle."""
     def loop():
         try:
             t0 = time.monotonic()
@@ -341,7 +426,7 @@ def prewarm_model():
                 no_speech_threshold=0.3,
                 condition_on_previous_text=False,
             )
-            print(f"  Prewarm: модель в памяти за {time.monotonic() - t0:.1f}s",
+            print(f"  Prewarm: model in memory in {time.monotonic() - t0:.1f}s",
                   flush=True)
         except Exception as e:
             print(f"⚠️  prewarm failed: {e}", flush=True)
@@ -412,9 +497,11 @@ class IPCHandler(http.server.BaseHTTPRequestHandler):
 
 
 def start_idle_watchdog():
-    """После IDLE_RESTART_SEC без записей завершает процесс через os._exit().
-    LaunchAgent (KeepAlive=true) поднимает свежий PID с чистым Core Audio session,
-    оранжевый индикатор гаснет."""
+    """After IDLE_RESTART_SEC with no recordings, exit via os._exit(); the
+    LaunchAgent (KeepAlive=true) relaunches a fresh PID with a clean Core Audio
+    session so the orange mic indicator clears. Disabled when IDLE_RESTART_SEC <= 0."""
+    if IDLE_RESTART_SEC <= 0:
+        return
     def loop():
         while True:
             time.sleep(WATCHDOG_PERIOD_SEC)
@@ -429,8 +516,22 @@ def start_idle_watchdog():
     threading.Thread(target=loop, daemon=True).start()
 
 
+def start_keepwarm_watchdog():
+    """Close the warm mic stream after KEEP_WARM_SEC of inactivity (privacy)."""
+    if KEEP_WARM_SEC <= 0:
+        return
+    def loop():
+        while True:
+            time.sleep(2)
+            if (daemon.state == "idle" and daemon.privacy_mode
+                    and daemon._stream is not None
+                    and daemon.seconds_since_activity() >= KEEP_WARM_SEC):
+                daemon._close_stream()
+    threading.Thread(target=loop, daemon=True).start()
+
+
 def start_ipc_server():
-    # allow_reuse_address — пережить TIME_WAIT после рестарта daemon
+    # allow_reuse_address — survive TIME_WAIT after a daemon restart
     socketserver.ThreadingTCPServer.allow_reuse_address = True
     try:
         server = socketserver.ThreadingTCPServer((IPC_HOST, IPC_PORT), IPCHandler)
@@ -457,14 +558,16 @@ print("=" * 45)
 print("  Whisper Dictation  |  mlx-whisper M-series")
 print("=" * 45)
 print(f"  Hotkey : RIGHT OPTION (push-to-talk)")
-print(f"  Язык   : {LANGUAGE or 'авто-детект'}")
-print(f"  Модель : {MODEL.split('/')[-1]}")
+print(f"  Language: {LANGUAGE or 'auto-detect'}")
+print(f"  Model   : {MODEL.split('/')[-1]}")
 start_ipc_server()
 start_idle_watchdog()
+start_keepwarm_watchdog()
 prewarm_model()
-print(f"  Idle restart: {IDLE_RESTART_SEC}s")
+print(f"  Idle restart: {'disabled' if IDLE_RESTART_SEC <= 0 else str(IDLE_RESTART_SEC) + 's'}")
+print(f"  Keep-warm   : {'off' if KEEP_WARM_SEC <= 0 else str(KEEP_WARM_SEC) + 's (preroll ' + str(PREROLL_SEC) + 's)'}")
 print("=" * 45)
-print("  Ctrl+C для выхода")
+print("  Ctrl+C to quit")
 print()
 print("  ℹ️  Hotkey not working? Verify BOTH permissions for Python:")
 print("     System Settings → Privacy & Security → Accessibility AND Input Monitoring")

@@ -21,3 +21,14 @@ EXTRA_PROMPT = "MyProduct, MyService, SomeJargon."
 # Play/Pause key (works with browser tabs/YouTube, Music, Spotify). Default True.
 # Set to False to leave playback untouched.
 AUTO_PAUSE_MEDIA = True
+
+# Convert spoken punctuation ("новая строка", "запятая", "new line", "comma",
+# ...) into real marks. Default False (some commands are also ordinary words,
+# e.g. "точка зрения"). Set True to enable.
+SPOKEN_PUNCTUATION = True
+
+# Keep the mic stream warm for N seconds after a dictation (+ a short pre-roll)
+# so the next dictation's first word isn't clipped by cold-start latency.
+# Trade-off: the mic indicator stays on a few seconds after you stop.
+# Set 0 to close the mic immediately after each dictation (max privacy).
+KEEP_WARM_SEC = 8

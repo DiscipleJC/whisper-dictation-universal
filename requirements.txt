@@ -5,6 +5,10 @@ pyperclip
 numpy
 mlx-whisper
 
+# ── System-tray UI (all platforms) ────────────────────────────────────────────
+pystray
+Pillow
+
 # ── macOS Intel / Linux / Windows — replace mlx-whisper with: ─────────────────
 # faster-whisper
 

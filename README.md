@@ -424,6 +424,58 @@ rm ~/Library/LaunchAgents/com.whisper-dictation.plist
 
 ---
 
+## System-tray / menu-bar UI
+
+`whisper_dictation_tray.py` is an optional tray controller that sits in the macOS menu bar (or system tray on Linux/Windows) and lets you monitor and control the running dictation daemon without touching a terminal.
+
+It connects to the daemon's local IPC (`http://127.0.0.1:18765`) and polls every 1.5 s — so the daemon **must be running** for the tray to show live data. The tray starts up and shows an offline icon until the daemon comes online; it recovers automatically if the daemon restarts.
+
+### Launch
+
+```bash
+source venv/bin/activate
+python whisper_dictation_tray.py
+```
+
+> The tray runs in the foreground. On macOS you'll see the icon appear in the menu bar. On Linux/Windows a tray icon appears in the system notification area.
+
+### Menu
+
+| Item | Type | What it does |
+|---|---|---|
+| ● Idle / 🔴 Recording / ⏳ Transcribing / ● Offline | info | Live daemon state |
+| Today: N · M words | info | Dictations and word count since midnight |
+| Model: … | info | Active Whisper model (short name) |
+| Language: … | info | Active language setting (`auto` if auto-detect) |
+| Avg latency: N.Ns | info | Rolling average transcription time for today |
+| **Privacy mode** (mic closed when idle) | toggle | Enables/disables privacy mode via the daemon IPC |
+| **Restart daemon** | action | macOS: `launchctl kickstart -k`; other: POST /restart |
+| **Open settings** | action | Opens `local_settings.py` (or the example if not present) |
+| **Open log** | action | Opens `~/Library/Logs/whisper-dictation.log` (macOS) |
+| **Quit** | action | Exits the tray process (daemon keeps running) |
+
+### Autostart for the tray (macOS)
+
+A separate LaunchAgent can start the tray automatically at login. The template `whisper-dictation-tray.plist` (in the repo root) works the same way as the daemon plist.
+
+```bash
+# 1. Generate with your real paths
+sed -e "s|/PATH/TO/VENV|$(pwd)/venv|g" \
+    -e "s|/PATH/TO/PROJECT|$(pwd)|g" \
+    -e "s|YOUR_USERNAME|$(whoami)|g" \
+    whisper-dictation-tray.plist \
+    > ~/Library/LaunchAgents/com.whisper-dictation.tray.plist
+
+# 2. Load it
+launchctl load ~/Library/LaunchAgents/com.whisper-dictation.tray.plist
+```
+
+The tray LaunchAgent restarts automatically if it crashes, but **not** when you quit it intentionally via the menu. The `LimitLoadToSessionType: Aqua` key ensures it only starts in a GUI login session (not SSH).
+
+> **Requirements:** `pystray` and `Pillow` must be installed (`pip install -r requirements.txt` installs both).
+
+---
+
 ## File transcription
 
 Transcribe any audio or video file from the command line:

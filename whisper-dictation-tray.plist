@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent template for Whisper Dictation Tray (macOS)
+  ─────────────────────────────────────────────────────────
+  Starts the tray menu-bar controller at login (GUI / Aqua session only).
+  Restarts on crash; does NOT restart when the user quits via the menu.
+
+  Replace placeholders before loading:
+    /PATH/TO/PROJECT   → absolute path to this repo folder
+    /PATH/TO/VENV      → absolute path to the venv folder inside the repo
+    YOUR_USERNAME      → your macOS username
+
+  One-liner to generate + install:
+    sed -e "s|/PATH/TO/VENV|$(pwd)/venv|g" \
+        -e "s|/PATH/TO/PROJECT|$(pwd)|g" \
+        -e "s|YOUR_USERNAME|$(whoami)|g" \
+        whisper-dictation-tray.plist \
+        > ~/Library/LaunchAgents/com.whisper-dictation.tray.plist
+    launchctl load ~/Library/LaunchAgents/com.whisper-dictation.tray.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.whisper-dictation.tray</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/PATH/TO/VENV/bin/python3</string>
+        <string>/PATH/TO/PROJECT/whisper_dictation_tray.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/PATH/TO/PROJECT</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <!-- Only load in a GUI login session (requires a display / window server) -->
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart on crash (non-zero exit) but not on intentional quit (exit 0) -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USERNAME/Library/Logs/whisper-dictation-tray.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/Library/Logs/whisper-dictation-tray.error.log</string>
+</dict>
+</plist>

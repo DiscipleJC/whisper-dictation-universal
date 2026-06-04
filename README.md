@@ -322,6 +322,42 @@ stays `medium` so it downloads fast and runs well on entry-level Macs (8 GB);
 99 languages including Russian (`ru`), Ukrainian (`uk`), English (`en`), Spanish (`es`), and more.  
 Set `LANGUAGE = None` for automatic detection.
 
+### Personal settings (`local_settings.py`)
+
+Instead of editing the tracked script, keep your personal model choice and tweaks
+in a `local_settings.py` next to it. It is **gitignored**, so your private
+vocabulary never ends up in version control:
+
+```bash
+cp local_settings.example.py local_settings.py
+```
+
+The mlx dictation script imports it on startup and applies any of these overrides
+(all optional):
+
+| Setting | Default | What it does |
+|---|---|---|
+| `MODEL` | `whisper-medium-mlx-4bit` | Transcription model, e.g. `mlx-community/whisper-large-v3-turbo` |
+| `EXTRA_PROMPT` | — | Extra words/phrases appended to `INITIAL_PROMPT` so your jargon is spelled correctly |
+| `AUTO_PAUSE_MEDIA` | `True` | Pause/resume whatever is playing (browser, Music, Spotify) while you dictate |
+| `SPOKEN_PUNCTUATION` | `False` | Turn spoken commands ("new line", "comma", …) into real punctuation |
+| `KEEP_WARM_SEC` | `8` | Keep the mic warm N seconds after a dictation so the next one isn't clipped; `0` = close immediately (max privacy) |
+
+### Dictation features (macOS / mlx backend)
+
+- **Auto-pause media** — sends the system Play/Pause key while recording, so music
+  or video pauses during dictation and resumes after (only when something is
+  actually playing). Toggle with `AUTO_PAUSE_MEDIA`.
+- **Warm mic + pre-roll** — keeps the mic stream warm briefly after a dictation and
+  prepends a short pre-roll, so back-to-back dictations don't lose the first word to
+  cold-start latency. Tune with `KEEP_WARM_SEC`.
+- **Spoken punctuation** — optionally convert phrases like "new line" / "comma" (and
+  their Russian equivalents) into real marks. Off by default because some commands
+  are also ordinary words. Enable with `SPOKEN_PUNCTUATION`.
+- **Sleep recovery** — after the Mac sleeps the first dictation may come back empty;
+  the daemon then reinitialises Core Audio in-process and the next one works, without
+  needing a restart.
+
 ---
 
 ## Autostart (macOS)

@@ -435,10 +435,11 @@ def prewarm_model():
 
 def stats_today():
     if not STATS_LOG.exists():
-        return {"count": 0, "words": 0}
+        return {"count": 0, "words": 0, "avg_sec": None}
     today = datetime.now().strftime("%Y-%m-%d")
     count = 0
     words = 0
+    total_sec = 0.0
     for line in STATS_LOG.read_text(encoding="utf-8").splitlines():
         try:
             entry = json.loads(line)
@@ -447,7 +448,9 @@ def stats_today():
         if entry.get("ts", "").startswith(today):
             count += 1
             words += entry.get("words", 0)
-    return {"count": count, "words": words}
+            total_sec += entry.get("transcribe_sec", 0) or 0
+    avg_sec = round(total_sec / count, 2) if count else None
+    return {"count": count, "words": words, "avg_sec": avg_sec}
 
 
 class IPCHandler(http.server.BaseHTTPRequestHandler):
@@ -467,6 +470,8 @@ class IPCHandler(http.server.BaseHTTPRequestHandler):
             self._respond(200, {
                 "state": daemon.state,
                 "privacy_mode": daemon.privacy_mode,
+                "model": MODEL,
+                "language": LANGUAGE or "auto",
                 "stats_today": stats_today(),
             })
         elif self.path == "/stats/today":

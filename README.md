@@ -86,7 +86,7 @@ python3 --version   # must be 3.10 or higher
 
 | Backend | Default model | Size | First-run download |
 |---|---|---|---|
-| mlx-whisper | `whisper-large-v3-turbo-4bit` | ~500 MB | Auto, ~1–2 min |
+| mlx-whisper | `whisper-large-v3-turbo` | ~1.6 GB | Auto, ~3–5 min |
 | faster-whisper | `turbo` (large-v3-turbo) | ~1.6 GB | Auto, ~3–5 min |
 | OpenAI API | `whisper-1` (cloud) | — | — |
 
@@ -288,7 +288,7 @@ Edit the script to change hotkey, language, or model:
 ```python
 HOTKEY   = Key.alt_r   # Hotkey: Right Option / Right Alt
 LANGUAGE = None        # None = auto-detect | "ru" | "en" | "uk" | etc.
-MODEL    = "mlx-community/whisper-large-v3-turbo-4bit"  # mlx-whisper model
+MODEL    = "mlx-community/whisper-large-v3-turbo"  # mlx-whisper model
 ```
 
 ### Available mlx-whisper models
@@ -298,16 +298,22 @@ MODEL    = "mlx-community/whisper-large-v3-turbo-4bit"  # mlx-whisper model
 | `whisper-base-mlx` | 74 MB | ~0.3s |
 | `whisper-small-mlx` | 244 MB | ~0.5s |
 | `whisper-medium-mlx-4bit` | 400 MB | ~0.8s |
-| `whisper-large-v3-turbo-4bit` | 500 MB | ~1s ← default |
-| `whisper-large-v3-turbo` | 1.6 GB | ~1s |
+| `whisper-large-v3-turbo-4bit` | 500 MB | ~1s (workaround needed, see below) |
+| `whisper-large-v3-turbo` | 1.6 GB | ~1s ← default |
 | `whisper-large-v3-mlx` | 1.5 GB | ~1.5s |
 
 The default follows the official openai/whisper recommendation: `large-v3-turbo`
 is ~8× faster than `large` at near-`large-v2` accuracy — noticeably better than
-`medium` on uncommon words, names, and word endings. The 4-bit build keeps the
-download and memory footprint at ~500 MB, so it also fits entry-level (8 GB) Macs.
-With 16 GB+ of RAM you can switch to the full-precision `whisper-large-v3-turbo`
-(~1.6 GB) for a small extra accuracy margin.
+`medium` on uncommon words, names, and word endings. On a tight-memory (8 GB) Mac,
+`whisper-medium-mlx-4bit` is the lighter fallback.
+
+> **Why not the 4-bit turbo build by default?** mlx-community's 4bit/8bit turbo
+> repos ship their weights as `model.safetensors`, which mlx-whisper ≤ 0.4.3
+> cannot load (it expects `weights.safetensors`) — it fails with a `load_npz`
+> error. Workaround until mlx-whisper supports the new naming: download the repo
+> once, copy `config.json` and `model.safetensors` into a local folder renaming
+> the latter to `weights.safetensors`, and point `MODEL` at that folder's
+> absolute path (works with `local_settings.py`).
 
 > **Tip — domain vocabulary:** if you frequently dictate specialised terms
 > (product names, jargon), add them to `INITIAL_PROMPT` in the script. Whisper
@@ -333,7 +339,7 @@ The mlx dictation script imports it on startup and applies any of these override
 
 | Setting | Default | What it does |
 |---|---|---|
-| `MODEL` | `whisper-large-v3-turbo-4bit` | Transcription model, e.g. `mlx-community/whisper-large-v3-turbo` |
+| `MODEL` | `whisper-large-v3-turbo` | Transcription model — an HF repo id or an absolute path to a local model folder |
 | `EXTRA_PROMPT` | — | Extra words/phrases appended to `INITIAL_PROMPT` so your jargon is spelled correctly (Whisper keeps only the last ~224 tokens of the prompt — put the most important terms at the end) |
 | `AUTO_PAUSE_MEDIA` | `True` | Pause/resume whatever is playing (browser, Music, Spotify) while you dictate |
 | `SPOKEN_PUNCTUATION` | `False` | Turn spoken commands ("new line", "comma", …) into real punctuation |

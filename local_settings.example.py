@@ -9,11 +9,12 @@ Then edit local_settings.py. Both settings below are optional — remove either
 one to fall back to the script's default.
 """
 
-# Override the transcription model. The script's default is
-# whisper-large-v3-turbo-4bit (~500 MB). On a 16 GB+ Mac the full-precision
-# turbo below (~1.6 GB) gives a small extra accuracy margin; on a tight-memory
-# Mac, whisper-medium-mlx-4bit (~400 MB) is the lighter fallback.
-MODEL = "mlx-community/whisper-large-v3-turbo"
+# Override the transcription model — an HF repo id or an absolute path to a
+# local model folder. The script's default is whisper-large-v3-turbo (~1.6 GB);
+# on a tight-memory Mac, whisper-medium-mlx-4bit (~400 MB) is the lighter
+# fallback. (The 4-bit turbo build needs a local-copy workaround with
+# mlx-whisper <= 0.4.3 — see README "Available mlx-whisper models".)
+MODEL = "mlx-community/whisper-medium-mlx-4bit"
 
 # Extra words appended to INITIAL_PROMPT — your own product names, jargon, etc.
 # Whisper uses it as a hint and spells these terms correctly far more often.

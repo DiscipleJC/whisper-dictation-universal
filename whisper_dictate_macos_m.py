@@ -36,7 +36,11 @@ from pynput.keyboard import Controller, Key, KeyCode
 
 HOTKEY = Key.alt_r
 LANGUAGE = None
-MODEL = "mlx-community/whisper-large-v3-turbo-4bit"
+# NOTE: not the 4-bit build — mlx-community's 4bit/8bit turbo repos ship
+# model.safetensors, which mlx-whisper <= 0.4.3 cannot load (it expects
+# weights.safetensors). See README "Available mlx-whisper models" for the
+# local-copy workaround if you need the smaller model.
+MODEL = "mlx-community/whisper-large-v3-turbo"
 RATE = 16000
 STATS_LOG = Path.home() / "Library" / "Logs" / "whisper-dictation-stats.jsonl"
 IPC_HOST = "127.0.0.1"

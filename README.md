@@ -86,8 +86,8 @@ python3 --version   # must be 3.10 or higher
 
 | Backend | Default model | Size | First-run download |
 |---|---|---|---|
-| mlx-whisper | `whisper-medium-mlx-4bit` | ~400 MB | Auto, ~1–2 min |
-| faster-whisper | `medium` | ~500 MB | Auto, ~2–3 min |
+| mlx-whisper | `whisper-large-v3-turbo-4bit` | ~500 MB | Auto, ~1–2 min |
+| faster-whisper | `turbo` (large-v3-turbo) | ~1.6 GB | Auto, ~3–5 min |
 | OpenAI API | `whisper-1` (cloud) | — | — |
 
 Model is downloaded automatically on first run and cached locally. Subsequent runs start instantly.
@@ -288,7 +288,7 @@ Edit the script to change hotkey, language, or model:
 ```python
 HOTKEY   = Key.alt_r   # Hotkey: Right Option / Right Alt
 LANGUAGE = None        # None = auto-detect | "ru" | "en" | "uk" | etc.
-MODEL    = "mlx-community/whisper-medium-mlx-4bit"  # mlx-whisper model
+MODEL    = "mlx-community/whisper-large-v3-turbo-4bit"  # mlx-whisper model
 ```
 
 ### Available mlx-whisper models
@@ -297,21 +297,17 @@ MODEL    = "mlx-community/whisper-medium-mlx-4bit"  # mlx-whisper model
 |---|---|---|
 | `whisper-base-mlx` | 74 MB | ~0.3s |
 | `whisper-small-mlx` | 244 MB | ~0.5s |
-| `whisper-medium-mlx-4bit` | 400 MB | ~0.8s ← default |
+| `whisper-medium-mlx-4bit` | 400 MB | ~0.8s |
+| `whisper-large-v3-turbo-4bit` | 500 MB | ~1s ← default |
 | `whisper-large-v3-turbo` | 1.6 GB | ~1s |
 | `whisper-large-v3-mlx` | 1.5 GB | ~1.5s |
 
-**Want better accuracy?** On an M-Pro / M-Max (or any Mac with 16 GB+ RAM)
-switch the default to `large-v3-turbo`:
-
-```python
-MODEL = "mlx-community/whisper-large-v3-turbo"
-```
-
-It is noticeably more accurate on uncommon words, names, and word endings,
-and still runs comfortably under real time on Apple Silicon. The default
-stays `medium` so it downloads fast and runs well on entry-level Macs (8 GB);
-`turbo` is the recommended upgrade when you have the headroom.
+The default follows the official openai/whisper recommendation: `large-v3-turbo`
+is ~8× faster than `large` at near-`large-v2` accuracy — noticeably better than
+`medium` on uncommon words, names, and word endings. The 4-bit build keeps the
+download and memory footprint at ~500 MB, so it also fits entry-level (8 GB) Macs.
+With 16 GB+ of RAM you can switch to the full-precision `whisper-large-v3-turbo`
+(~1.6 GB) for a small extra accuracy margin.
 
 > **Tip — domain vocabulary:** if you frequently dictate specialised terms
 > (product names, jargon), add them to `INITIAL_PROMPT` in the script. Whisper
@@ -337,8 +333,8 @@ The mlx dictation script imports it on startup and applies any of these override
 
 | Setting | Default | What it does |
 |---|---|---|
-| `MODEL` | `whisper-medium-mlx-4bit` | Transcription model, e.g. `mlx-community/whisper-large-v3-turbo` |
-| `EXTRA_PROMPT` | — | Extra words/phrases appended to `INITIAL_PROMPT` so your jargon is spelled correctly |
+| `MODEL` | `whisper-large-v3-turbo-4bit` | Transcription model, e.g. `mlx-community/whisper-large-v3-turbo` |
+| `EXTRA_PROMPT` | — | Extra words/phrases appended to `INITIAL_PROMPT` so your jargon is spelled correctly (Whisper keeps only the last ~224 tokens of the prompt — put the most important terms at the end) |
 | `AUTO_PAUSE_MEDIA` | `True` | Pause/resume whatever is playing (browser, Music, Spotify) while you dictate |
 | `SPOKEN_PUNCTUATION` | `False` | Turn spoken commands ("new line", "comma", …) into real punctuation |
 | `KEEP_WARM_SEC` | `8` | Keep the mic warm N seconds after a dictation so the next one isn't clipped; `0` = close immediately (max privacy) |

@@ -10,7 +10,7 @@ pystray
 Pillow
 
 # ── macOS Intel / Linux / Windows — replace mlx-whisper with: ─────────────────
-# faster-whisper
+# faster-whisper>=1.1   # >=1.1 required for the default "turbo" model
 
 # ── OpenAI API backend — replace mlx-whisper with: ────────────────────────────
 # openai

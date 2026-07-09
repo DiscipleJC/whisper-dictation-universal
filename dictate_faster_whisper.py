@@ -24,12 +24,21 @@ from pynput.keyboard import Key, Controller
 
 # --- Settings ---
 HOTKEY    = Key.alt_r
-MODEL     = "medium"      # tiny | base | small | medium | large-v3
+MODEL     = "turbo"       # turbo (needs faster-whisper>=1.1) | tiny | base | small | medium | large-v3
 LANGUAGE  = None          # None = auto-detect
 RATE      = 16000
 DEVICE    = "auto"        # auto | cpu | cuda
 COMPUTE   = "auto"        # auto | int8 | float16 | float32
 # ----------------
+
+# Domain vocabulary hint so technical terms are spelled correctly.
+# Whisper keeps only the LAST ~224 tokens of the prompt, so put the most
+# important terms at the end.
+INITIAL_PROMPT = (
+    "Claude Code, OpenAI, Python, JavaScript, TypeScript, GitHub, Docker, "
+    "Kubernetes, API, REST, JSON, SQL, React, Node.js, Linux, macOS, Windows, "
+    "Telegram, Slack, Zoom, YouTube, GPT, LLM, AI, ML, CPU, GPU, SSD, RAM."
+)
 
 print("=" * 48)
 print("  Whisper Dictation  |  faster-whisper")
@@ -79,6 +88,10 @@ def _transcribe():
         language=LANGUAGE,
         beam_size=5,
         vad_filter=True,
+        # Don't feed recognised text back as context: one hallucinated phrase
+        # would otherwise reinforce itself and repeat in a loop.
+        condition_on_previous_text=False,
+        initial_prompt=INITIAL_PROMPT,
     )
     text = " ".join(s.text for s in segments).strip()
 

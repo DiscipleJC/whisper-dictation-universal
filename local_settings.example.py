@@ -9,12 +9,16 @@ Then edit local_settings.py. Both settings below are optional — remove either
 one to fall back to the script's default.
 """
 
-# Override the transcription model. On an M-Pro / M-Max or any 16 GB+ Mac,
-# large-v3-turbo is noticeably more accurate while still fast.
+# Override the transcription model. The script's default is
+# whisper-large-v3-turbo-4bit (~500 MB). On a 16 GB+ Mac the full-precision
+# turbo below (~1.6 GB) gives a small extra accuracy margin; on a tight-memory
+# Mac, whisper-medium-mlx-4bit (~400 MB) is the lighter fallback.
 MODEL = "mlx-community/whisper-large-v3-turbo"
 
 # Extra words appended to INITIAL_PROMPT — your own product names, jargon, etc.
 # Whisper uses it as a hint and spells these terms correctly far more often.
+# Note: Whisper keeps only the LAST ~224 tokens of the combined prompt, so put
+# the most important terms at the END of this string.
 EXTRA_PROMPT = "MyProduct, MyService, SomeJargon."
 
 # Pause media while dictating and resume afterwards, by sending the system

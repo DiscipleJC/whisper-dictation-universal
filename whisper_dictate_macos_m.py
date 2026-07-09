@@ -36,7 +36,7 @@ from pynput.keyboard import Controller, Key, KeyCode
 
 HOTKEY = Key.alt_r
 LANGUAGE = None
-MODEL = "mlx-community/whisper-medium-mlx-4bit"
+MODEL = "mlx-community/whisper-large-v3-turbo-4bit"
 RATE = 16000
 STATS_LOG = Path.home() / "Library" / "Logs" / "whisper-dictation-stats.jsonl"
 IPC_HOST = "127.0.0.1"
@@ -360,12 +360,21 @@ class Daemon:
                 audio,
                 path_or_hf_repo=MODEL,
                 language=LANGUAGE,
-                no_speech_threshold=0.3,
+                no_speech_threshold=0.6,
                 condition_on_previous_text=False,
                 initial_prompt=INITIAL_PROMPT,
             )
             transcribe_sec = time.monotonic() - t0
-            text = result["text"].strip()
+            # Drop hallucinated segments before pasting. Thresholds are the
+            # official openai/whisper values: no_speech_prob > 0.6 with
+            # avg_logprob < -1.0 = speech invented over breath/noise ("Thanks
+            # for watching"); compression_ratio >= 2.4 = a repetition loop.
+            segments = [
+                s for s in result["segments"]
+                if not (s["no_speech_prob"] > 0.6 and s["avg_logprob"] < -1.0)
+                and s["compression_ratio"] < 2.4
+            ]
+            text = "".join(s["text"] for s in segments).strip()
             if not text:
                 print("⚠️  No text recognised\n", flush=True)
                 return
@@ -423,7 +432,7 @@ def prewarm_model():
                 silent,
                 path_or_hf_repo=MODEL,
                 language=LANGUAGE,
-                no_speech_threshold=0.3,
+                no_speech_threshold=0.6,
                 condition_on_previous_text=False,
             )
             print(f"  Prewarm: model in memory in {time.monotonic() - t0:.1f}s",

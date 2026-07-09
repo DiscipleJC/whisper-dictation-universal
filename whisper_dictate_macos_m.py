@@ -201,6 +201,9 @@ _HALLUCINATION_RE = re.compile(
     r"|спасибо за просмотр\w*"
     r"|подписывайтесь на\s.*канал.*"
     r"|(?:thank you|thanks) for watching\w*"
+    r"|thank\s+you(?:\s+(?:so|very)\s+much)?"
+    r"|thanks(?:\s+(?:so|very)\s+much)?"
+    r"|bye(?:[-\s]*bye)?"
     r"|subtitles by\b.*|.*amara\.org.*"
     r")[\s.!?…,]*$",
     re.IGNORECASE,

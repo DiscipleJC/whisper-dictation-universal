@@ -183,6 +183,26 @@ _SPOKEN_PUNCT_RE = [
 ]
 
 
+# Signature Whisper hallucinations — phrases the model "hears" in breath or
+# noise ("Субтитры создавал DimaTorzok", "Thanks for watching"). They come out
+# with HIGH avg_logprob (the model is confident — the phrases are frequent in
+# its training data), so the probability-based segment filter cannot catch
+# them; match the text instead. A segment is dropped only when it contains
+# nothing but such a phrase.
+_HALLUCINATION_RE = re.compile(
+    r"^\s*(?:"
+    r"субтитры\s+(?:сделал|делал|создавал|создал|подготовил)\s+\S+"
+    r"|редактор субтитров\b.*|корректор\s+\S{1,20}"
+    r"|продолжение следует"
+    r"|спасибо за просмотр\w*"
+    r"|подписывайтесь на\s.*канал.*"
+    r"|(?:thank you|thanks) for watching\w*"
+    r"|subtitles by\b.*|.*amara\.org.*"
+    r")[\s.!?…,]*$",
+    re.IGNORECASE,
+)
+
+
 def _apply_spoken_punctuation(text):
     """Replace spoken punctuation commands with real marks, then tidy spacing."""
     if not SPOKEN_PUNCTUATION:
@@ -373,6 +393,7 @@ class Daemon:
                 s for s in result["segments"]
                 if not (s["no_speech_prob"] > 0.6 and s["avg_logprob"] < -1.0)
                 and s["compression_ratio"] < 2.4
+                and not _HALLUCINATION_RE.match(s["text"].strip())
             ]
             text = "".join(s["text"] for s in segments).strip()
             if not text:

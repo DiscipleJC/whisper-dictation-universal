@@ -615,5 +615,12 @@ print("  ℹ️  Hotkey not working? Verify BOTH permissions for Python:")
 print("     System Settings → Privacy & Security → Accessibility AND Input Monitoring")
 print()
 
+# background agent: no Dock icon (the Python "rocket"), no app switcher
+try:
+    from AppKit import NSApplication
+    NSApplication.sharedApplication().setActivationPolicy_(1)  # Accessory
+except Exception:
+    pass
+
 with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
     listener.join()

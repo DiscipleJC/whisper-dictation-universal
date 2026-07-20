@@ -409,13 +409,27 @@ class Daemon:
             text = _apply_spoken_punctuation(text)
             print(f"✅ {text}\n", flush=True)
             self._log_stats(text, audio_sec, transcribe_sec, result.get("language"))
+            # Paste at the cursor via the clipboard, then hand the clipboard
+            # back to whatever the user had before, so dictation never leaves
+            # its text stuck in the clipboard (hijacking the next Cmd+V).
+            try:
+                prev_clip = pyperclip.paste()
+            except Exception:
+                prev_clip = None
             # Trailing space so consecutive dictations don't run together.
-            pyperclip.copy(text + " ")
+            payload = text + " "
+            pyperclip.copy(payload)
             time.sleep(0.1)
             v_key = KeyCode.from_vk(9)
             with self.kb.pressed(Key.cmd):
                 self.kb.press(v_key)
                 self.kb.release(v_key)
+            if prev_clip is not None:
+                threading.Thread(
+                    target=self._restore_clipboard,
+                    args=(prev_clip, payload),
+                    daemon=True,
+                ).start()
         finally:
             self._state = "idle"
             self._last_activity = time.monotonic()
@@ -424,6 +438,19 @@ class Daemon:
             if self._privacy_mode and KEEP_WARM_SEC <= 0:
                 self._close_stream()
             self._resume_media()
+
+    @staticmethod
+    def _restore_clipboard(prev_clip, ours, delay=0.4):
+        """Give the frontmost app time to read the pasteboard for Cmd+V, then
+        put the user's previous clipboard back. Guarded: only restore if the
+        clipboard still holds OUR dictated text — if the user copied something
+        else in the meantime, leave their copy alone (no clobber)."""
+        time.sleep(delay)
+        try:
+            if pyperclip.paste() == ours:
+                pyperclip.copy(prev_clip)
+        except Exception:
+            pass
 
     def _log_stats(self, text, audio_sec, transcribe_sec, language):
         entry = {

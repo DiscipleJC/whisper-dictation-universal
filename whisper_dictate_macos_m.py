@@ -64,8 +64,16 @@ PREROLL_SEC = 0.3
 # Pause media while recording and resume afterwards by sending the system
 # Play/Pause media key — this controls whatever is playing system-wide
 # (browser tabs like YouTube, Music, Spotify, etc.). Best-effort.
-# Set AUTO_PAUSE_MEDIA = False in local_settings.py to disable.
-AUTO_PAUSE_MEDIA = True
+#
+# OFF by default: the media key only reaches a real player when something is
+# actually playing, but the CoreAudio "is playing" gate (_audio_is_playing)
+# is unreliable on macOS 15.4+/26 (kAudioDevicePropertyDeviceIsRunningSomewhere
+# reports the device as busy even in silence), so the key fires on every
+# dictation. With no now-playing app registered, macOS routes a stray
+# Play/Pause key to *launching Music.app* ("Choose Music Library" dialog).
+# Enable AUTO_PAUSE_MEDIA = True in local_settings.py if you want auto-pause
+# and accept that trade-off.
+AUTO_PAUSE_MEDIA = False
 
 # Convert spoken punctuation commands ("новая строка", "запятая", "new line",
 # "comma", ...) into real punctuation in the transcript. Off by default because

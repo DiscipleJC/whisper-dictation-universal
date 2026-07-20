@@ -23,9 +23,11 @@ MODEL = "mlx-community/whisper-medium-mlx-4bit"
 EXTRA_PROMPT = "MyProduct, MyService, SomeJargon."
 
 # Pause media while dictating and resume afterwards, by sending the system
-# Play/Pause key (works with browser tabs/YouTube, Music, Spotify). Default True.
-# Set to False to leave playback untouched.
-AUTO_PAUSE_MEDIA = True
+# Play/Pause key (works with browser tabs/YouTube, Music, Spotify). Default False:
+# on macOS 15.4+/26 the "is something playing" gate is unreliable, so the key
+# can fire in silence and launch Music.app ("Choose Music Library"). Set to True
+# to opt back in.
+AUTO_PAUSE_MEDIA = False
 
 # Convert spoken punctuation ("новая строка", "запятая", "new line", "comma",
 # ...) into real marks. Default False (some commands are also ordinary words,

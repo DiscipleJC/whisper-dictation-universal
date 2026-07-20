@@ -340,15 +340,17 @@ The mlx dictation script imports it on startup and applies any of these override
 |---|---|---|
 | `MODEL` | `whisper-large-v3-turbo` | Transcription model — an HF repo id or an absolute path to a local model folder |
 | `EXTRA_PROMPT` | — | Extra words/phrases appended to `INITIAL_PROMPT` so your jargon is spelled correctly (Whisper keeps only the last ~224 tokens of the prompt — put the most important terms at the end) |
-| `AUTO_PAUSE_MEDIA` | `True` | Pause/resume whatever is playing (browser, Music, Spotify) while you dictate |
+| `AUTO_PAUSE_MEDIA` | `False` | Pause/resume whatever is playing (browser, Music, Spotify) while you dictate. Off by default because on macOS 15.4+/26 the "is playing" gate is unreliable and a stray media key can launch Music.app; set `True` to opt in |
 | `SPOKEN_PUNCTUATION` | `False` | Turn spoken commands ("new line", "comma", …) into real punctuation |
 | `KEEP_WARM_SEC` | `8` | Keep the mic warm N seconds after a dictation so the next one isn't clipped; `0` = close immediately (max privacy) |
 
 ### Dictation features (macOS / mlx backend)
 
 - **Auto-pause media** — sends the system Play/Pause key while recording, so music
-  or video pauses during dictation and resumes after (only when something is
-  actually playing). Toggle with `AUTO_PAUSE_MEDIA`.
+  or video pauses during dictation and resumes after. **Off by default**: on
+  macOS 15.4+/26 the CoreAudio "is something playing" check is unreliable, so the
+  key can fire in silence and, with no now-playing app, launch Music.app. Opt in
+  with `AUTO_PAUSE_MEDIA = True`.
 - **Warm mic + pre-roll** — keeps the mic stream warm briefly after a dictation and
   prepends a short pre-roll, so back-to-back dictations don't lose the first word to
   cold-start latency. Tune with `KEEP_WARM_SEC`.

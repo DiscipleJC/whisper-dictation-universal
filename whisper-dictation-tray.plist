@@ -17,7 +17,7 @@
         -e "s|YOUR_USERNAME|$(whoami)|g" \
         whisper-dictation-tray.plist \
         > ~/Library/LaunchAgents/com.whisper-dictation.tray.plist
-    launchctl load ~/Library/LaunchAgents/com.whisper-dictation.tray.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.whisper-dictation.tray.plist
 -->
 <plist version="1.0">
 <dict>

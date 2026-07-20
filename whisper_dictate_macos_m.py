@@ -21,6 +21,7 @@ import json
 import os
 import re
 import socketserver
+import subprocess
 import threading
 import time
 from collections import deque
@@ -81,6 +82,16 @@ AUTO_PAUSE_MEDIA = False
 # local_settings.py with SPOKEN_PUNCTUATION = True.
 SPOKEN_PUNCTUATION = False
 
+# Safety guard for long dictations. Auto-paste sends Cmd+V into whatever window
+# is frontmost when you release the hotkey — during a multi-minute recording the
+# focus has often drifted away from where you started, so the paste misfires
+# (and _restore_clipboard then wipes the text). If the recorded audio is longer
+# than this many seconds, DON'T auto-paste: leave the transcript on the
+# clipboard (without restoring the previous clip) and show a notification, so
+# you paste it deliberately with Cmd+V. 0 disables the guard (always auto-paste).
+# Overridable in local_settings.py.
+AUTO_PASTE_MAX_SEC = 300
+
 INITIAL_PROMPT = (
     "Claude Code, OpenAI, Python, JavaScript, TypeScript, GitHub, Docker, "
     "Kubernetes, API, REST, JSON, SQL, React, Node.js, Linux, macOS, Windows, "
@@ -96,11 +107,26 @@ try:
     AUTO_PAUSE_MEDIA = getattr(_local, "AUTO_PAUSE_MEDIA", AUTO_PAUSE_MEDIA)
     SPOKEN_PUNCTUATION = getattr(_local, "SPOKEN_PUNCTUATION", SPOKEN_PUNCTUATION)
     KEEP_WARM_SEC = getattr(_local, "KEEP_WARM_SEC", KEEP_WARM_SEC)
+    AUTO_PASTE_MAX_SEC = getattr(_local, "AUTO_PASTE_MAX_SEC", AUTO_PASTE_MAX_SEC)
     _extra_prompt = getattr(_local, "EXTRA_PROMPT", "")
     if _extra_prompt:
         INITIAL_PROMPT = f"{INITIAL_PROMPT} {_extra_prompt}"
 except ImportError:
     pass
+
+
+def _notify(title, message):
+    """Best-effort macOS notification via osascript. Never raises."""
+    try:
+        safe_title = title.replace('"', "'")
+        safe_msg = message.replace('"', "'")
+        subprocess.run(
+            ["osascript", "-e",
+             f'display notification "{safe_msg}" with title "{safe_title}"'],
+            check=False, capture_output=True, timeout=5,
+        )
+    except Exception:
+        pass
 
 
 # Media-key support via pyobjc. Sending the system Play/Pause key controls
@@ -417,27 +443,39 @@ class Daemon:
             text = _apply_spoken_punctuation(text)
             print(f"✅ {text}\n", flush=True)
             self._log_stats(text, audio_sec, transcribe_sec, result.get("language"))
-            # Paste at the cursor via the clipboard, then hand the clipboard
-            # back to whatever the user had before, so dictation never leaves
-            # its text stuck in the clipboard (hijacking the next Cmd+V).
-            try:
-                prev_clip = pyperclip.paste()
-            except Exception:
-                prev_clip = None
             # Trailing space so consecutive dictations don't run together.
             payload = text + " "
-            pyperclip.copy(payload)
-            time.sleep(0.1)
-            v_key = KeyCode.from_vk(9)
-            with self.kb.pressed(Key.cmd):
-                self.kb.press(v_key)
-                self.kb.release(v_key)
-            if prev_clip is not None:
-                threading.Thread(
-                    target=self._restore_clipboard,
-                    args=(prev_clip, payload),
-                    daemon=True,
-                ).start()
+            if AUTO_PASTE_MAX_SEC and audio_sec > AUTO_PASTE_MAX_SEC:
+                # Long recording: focus has likely drifted from where dictation
+                # started, so a blind Cmd+V would misfire. Leave the transcript
+                # on the clipboard (do NOT restore the previous clip — that would
+                # wipe it) and notify, so the user pastes it deliberately.
+                pyperclip.copy(payload)
+                mins = audio_sec / 60
+                print(f"📋 Long recording ({mins:.1f} min) — transcript left on "
+                      f"clipboard, press Cmd+V to paste\n", flush=True)
+                _notify("Whisper Dictation",
+                        f"Long transcript ready ({mins:.1f} min) — press Cmd+V to paste")
+            else:
+                # Paste at the cursor via the clipboard, then hand the clipboard
+                # back to whatever the user had before, so dictation never leaves
+                # its text stuck in the clipboard (hijacking the next Cmd+V).
+                try:
+                    prev_clip = pyperclip.paste()
+                except Exception:
+                    prev_clip = None
+                pyperclip.copy(payload)
+                time.sleep(0.1)
+                v_key = KeyCode.from_vk(9)
+                with self.kb.pressed(Key.cmd):
+                    self.kb.press(v_key)
+                    self.kb.release(v_key)
+                if prev_clip is not None:
+                    threading.Thread(
+                        target=self._restore_clipboard,
+                        args=(prev_clip, payload),
+                        daemon=True,
+                    ).start()
         finally:
             self._state = "idle"
             self._last_activity = time.monotonic()
@@ -643,6 +681,7 @@ start_keepwarm_watchdog()
 prewarm_model()
 print(f"  Idle restart: {'disabled' if IDLE_RESTART_SEC <= 0 else str(IDLE_RESTART_SEC) + 's'}")
 print(f"  Keep-warm   : {'off' if KEEP_WARM_SEC <= 0 else str(KEEP_WARM_SEC) + 's (preroll ' + str(PREROLL_SEC) + 's)'}")
+print(f"  Auto-paste  : {'always' if AUTO_PASTE_MAX_SEC <= 0 else 'up to ' + str(AUTO_PASTE_MAX_SEC) + 's, longer → clipboard + notify'}")
 print("=" * 45)
 print("  Ctrl+C to quit")
 print()

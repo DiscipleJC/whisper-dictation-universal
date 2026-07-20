@@ -212,7 +212,7 @@ LaunchAgent launches Python **directly via launchd**, not through Terminal — s
 5. Paste the path from step 1, click Open
 6. Make sure the checkbox is **on**
 
-After granting — restart the script or LaunchAgent (`launchctl unload` + `launchctl load`).
+After granting — restart the script or LaunchAgent (`launchctl kickstart -k gui/$(id -u)/com.whisper-dictation`).
 
 > **Why Python.app and not `venv/bin/python3.12`?** The venv's `python3.12` is a symlink without its own code signature. macOS Accessibility matches by signed application bundle, and the Homebrew `Python.app` is the entry that is reliably recognized.
 
@@ -249,8 +249,7 @@ Grant Input Monitoring to the **same Homebrew Python.app** you used for Accessib
 4. Click Open, make sure the checkbox is **on**
 5. Reload the LaunchAgent:
    ```bash
-   launchctl unload ~/Library/LaunchAgents/com.whisper-dictation.plist
-   launchctl load ~/Library/LaunchAgents/com.whisper-dictation.plist
+   launchctl kickstart -k gui/$(id -u)/com.whisper-dictation
    ```
 
 > **Both Accessibility AND Input Monitoring are required** for the LaunchAgent path. Granting only Accessibility is the most common cause of "hotkey silently does nothing" after Accessibility is correctly configured.
@@ -383,7 +382,7 @@ sed -e "s|/PATH/TO/VENV|$(pwd)/venv|g" \
     > ~/Library/LaunchAgents/com.whisper-dictation.plist
 
 # 2. Load it (starts now + at every future login)
-launchctl load ~/Library/LaunchAgents/com.whisper-dictation.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.whisper-dictation.plist
 
 # 3. Verify it's running
 launchctl list | grep whisper-dictation
@@ -398,16 +397,19 @@ launchctl list | grep whisper-dictation
 > 1. **Accessibility** — see [Accessibility permission](#accessibility-permission-macos) for path and steps
 > 2. **Input Monitoring** — see [Input Monitoring permission](#input-monitoring-permission-macos-sonomasequoiatahoe--required-for-launchagent) (required on macOS 14+)
 >
-> Both paths point to the same Python.app file. After granting both, reload the LaunchAgent (`launchctl unload` + `launchctl load`).
+> Both paths point to the same Python.app file. After granting both, reload the LaunchAgent (`launchctl kickstart -k gui/$(id -u)/com.whisper-dictation`).
 
 ### Management
 
 ```bash
 # Stop
-launchctl unload ~/Library/LaunchAgents/com.whisper-dictation.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.whisper-dictation.plist
 
 # Start
-launchctl load ~/Library/LaunchAgents/com.whisper-dictation.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.whisper-dictation.plist
+
+# Restart
+launchctl kickstart -k gui/$(id -u)/com.whisper-dictation
 ```
 
 Logs:
@@ -420,7 +422,7 @@ Logs:
 ### Uninstall
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.whisper-dictation.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.whisper-dictation.plist
 rm ~/Library/LaunchAgents/com.whisper-dictation.plist
 ```
 
@@ -469,7 +471,7 @@ sed -e "s|/PATH/TO/VENV|$(pwd)/venv|g" \
     > ~/Library/LaunchAgents/com.whisper-dictation.tray.plist
 
 # 2. Load it
-launchctl load ~/Library/LaunchAgents/com.whisper-dictation.tray.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.whisper-dictation.tray.plist
 ```
 
 The tray LaunchAgent restarts automatically if it crashes, but **not** when you quit it intentionally via the menu. The `LimitLoadToSessionType: Aqua` key ensures it only starts in a GUI login session (not SSH).
@@ -561,7 +563,7 @@ Grant Accessibility access. **Which binary depends on how you run the script** �
 - Running from terminal → grant to **Terminal**
 - Running as LaunchAgent → grant to the **Homebrew Python.app** (find exact path with `ls -d /opt/homebrew/Cellar/python@3.12/*/Frameworks/Python.framework/Versions/3.12/Resources/Python.app`)
 
-Restart the script (or `launchctl unload && launchctl load` for LaunchAgent) after granting.
+Restart the script (or `launchctl kickstart -k gui/$(id -u)/com.whisper-dictation` for LaunchAgent) after granting.
 
 ### Hotkey works in terminal but silently fails after LaunchAgent setup
 
@@ -570,8 +572,7 @@ You granted Accessibility to Terminal, but LaunchAgent runs Python directly with
 Fix: grant Accessibility to the Homebrew **Python.app** specifically (see [Accessibility permission](#accessibility-permission-macos) for the exact path). Then reload the LaunchAgent:
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.whisper-dictation.plist
-launchctl load ~/Library/LaunchAgents/com.whisper-dictation.plist
+launchctl kickstart -k gui/$(id -u)/com.whisper-dictation
 ```
 
 ### Hotkey doesn't catch — Accessibility is granted, error log is empty, but nothing happens
@@ -582,7 +583,7 @@ You have Python.app in Accessibility with the checkbox ON, the LaunchAgent is ru
 
 Fix: grant Input Monitoring to the **same Python.app** path (see [Input Monitoring permission](#input-monitoring-permission-macos-sonomasequoiatahoe--required-for-launchagent)). Then reload the LaunchAgent.
 
-**Diagnostic trick — foreground test:** Stop the LaunchAgent (`launchctl unload ...`), then run the script directly in your terminal (`source venv/bin/activate; python whisper_dictate_macos_m.py`). If the hotkey **works in foreground** but **not as LaunchAgent**, the issue is permissions for Python.app specifically — Terminal already has these system-wide permissions, while LaunchAgent runs Python directly and needs them granted to Python.app.
+**Diagnostic trick — foreground test:** Stop the LaunchAgent (`launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.whisper-dictation.plist`), then run the script directly in your terminal (`source venv/bin/activate; python whisper_dictate_macos_m.py`). If the hotkey **works in foreground** but **not as LaunchAgent**, the issue is permissions for Python.app specifically — Terminal already has these system-wide permissions, while LaunchAgent runs Python directly and needs them granted to Python.app.
 
 **Toggle trick (if both permissions are granted but still doesn't work):** macOS occasionally "sticks" permissions in an inconsistent state. Toggle Python OFF in Accessibility (or Input Monitoring), wait 5 seconds, toggle it back ON, then reload the LaunchAgent.
 

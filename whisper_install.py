@@ -372,8 +372,7 @@ def guide_input_monitoring():
     print("  make sure the checkbox is ON.")
     print()
     print("  After granting BOTH permissions — reload the agent:")
-    print("  launchctl unload ~/Library/LaunchAgents/com.whisper-dictation.plist")
-    print("  launchctl load   ~/Library/LaunchAgents/com.whisper-dictation.plist")
+    print("  launchctl kickstart -k gui/$(id -u)/com.whisper-dictation")
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 
@@ -386,8 +385,9 @@ def print_summary():
     print()
     if IS_MACOS:
         print("  Logs   : ~/Library/Logs/whisper-dictation.log")
-        print("  Stop   : launchctl unload ~/Library/LaunchAgents/com.whisper-dictation.plist")
-        print("  Start  : launchctl load   ~/Library/LaunchAgents/com.whisper-dictation.plist")
+        print("  Stop   : launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.whisper-dictation.plist")
+        print("  Start  : launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.whisper-dictation.plist")
+        print("  Restart: launchctl kickstart -k gui/$(id -u)/com.whisper-dictation")
     elif IS_LINUX:
         print("  Status : systemctl --user status whisper-dictation")
         print("  Stop   : systemctl --user stop  whisper-dictation")

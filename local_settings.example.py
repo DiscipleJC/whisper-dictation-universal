@@ -39,3 +39,13 @@ SPOKEN_PUNCTUATION = True
 # Trade-off: the mic indicator stays on a few seconds after you stop.
 # Set 0 to close the mic immediately after each dictation (max privacy).
 KEEP_WARM_SEC = 8
+
+# Safety guard for long dictations. Auto-paste sends Cmd+V into whatever window
+# is frontmost when you release the hotkey; during a multi-minute recording the
+# focus has usually drifted away from where you started, so the paste misfires
+# into the wrong window (and the clipboard is then restored, wiping the text).
+# If the recorded audio is longer than this many seconds, the transcript is left
+# on the clipboard (not restored) and a notification is shown, so you paste it
+# deliberately with Cmd+V. 300 s = 5 min. Set 0 to disable the guard (always
+# auto-paste). The transcript is always saved to the log regardless.
+AUTO_PASTE_MAX_SEC = 300

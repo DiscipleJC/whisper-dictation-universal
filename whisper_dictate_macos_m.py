@@ -297,12 +297,14 @@ class Daemon:
         return self._privacy_mode
 
     def _audio_callback(self, gen, indata, frames, t, status):
-        if gen != self._gen:
-            return  # a replaced/abandoned stream woke up — not our audio
         block = indata.copy()
-        self._last_cb = time.monotonic()
-        self._prebuf.append(block)
+        # Check and write under one lock: generation bumps happen under it
+        # too, so a callback from a replaced stream can't slip in between.
         with self._lock:
+            if gen != self._gen:
+                return  # a replaced/abandoned stream woke up — not our audio
+            self._last_cb = time.monotonic()
+            self._prebuf.append(block)
             if self._state == "recording":
                 self._frames.append(block)
                 self._rec_samples += len(block)
@@ -323,8 +325,9 @@ class Daemon:
         return out
 
     def _new_stream(self):
-        self._gen += 1
-        gen = self._gen
+        with self._lock:
+            self._gen += 1
+            gen = self._gen
         stream = sd.InputStream(
             samplerate=RATE, channels=1, dtype="float32", blocksize=BLOCKSIZE,
             callback=lambda *a: self._audio_callback(gen, *a),
@@ -332,10 +335,7 @@ class Daemon:
         try:
             stream.start()
         except Exception:
-            try:
-                stream.close()
-            except Exception:
-                pass
+            self._shutdown_stream(stream)
             raise
         self._last_cb = time.monotonic()
         return stream
@@ -381,13 +381,16 @@ class Daemon:
         in place for every following recording ("Recording too short")."""
         with self._stream_lock:
             stream, self._stream = self._stream, None
-            self._gen += 1  # silence its callback even if close() hangs
-            # The next stream starts cold: its pre-roll must not replay the
-            # tail of this one.
-            self._prebuf.clear()
-        if stream is None:
-            return
+            with self._lock:
+                self._gen += 1  # silence its callback even if close() hangs
+                # The next stream starts cold: its pre-roll must not replay
+                # the tail of this one.
+                self._prebuf.clear()
+        if stream is not None:
+            self._shutdown_stream(stream)
 
+    def _shutdown_stream(self, stream):
+        """abort() + close() off-thread, waiting at most 2 s."""
         def shutdown():
             try:
                 stream.abort()   # abort, not stop: don't wait to drain buffers
@@ -420,6 +423,8 @@ class Daemon:
         sleep (recordings come back empty). Avoids a full process restart."""
         try:
             self._close_stream()
+            if self._abandoned:
+                self._restart_daemon()  # Pa_Terminate would hang on it
             sd._terminate()
             sd._initialize()
             print("🔁 Audio reinitialised (after sleep)", flush=True)

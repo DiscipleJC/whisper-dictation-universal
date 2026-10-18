@@ -285,6 +285,8 @@ class Daemon:
         self._rec_started = 0.0
         self._rec_held = 0.0      # how long the hotkey was held
         self._dead_streak = 0     # recordings in a row with no live audio
+        self._gen = 0             # id of the current stream; older ones are ignored
+        self._abandoned = False   # a stream close hung inside PortAudio
 
     @property
     def state(self):
@@ -294,7 +296,9 @@ class Daemon:
     def privacy_mode(self):
         return self._privacy_mode
 
-    def _audio_callback(self, indata, frames, t, status):
+    def _audio_callback(self, gen, indata, frames, t, status):
+        if gen != self._gen:
+            return  # a replaced/abandoned stream woke up — not our audio
         block = indata.copy()
         self._last_cb = time.monotonic()
         self._prebuf.append(block)
@@ -319,11 +323,20 @@ class Daemon:
         return out
 
     def _new_stream(self):
+        self._gen += 1
+        gen = self._gen
         stream = sd.InputStream(
-            samplerate=RATE, channels=1, dtype="float32",
-            blocksize=BLOCKSIZE, callback=self._audio_callback,
+            samplerate=RATE, channels=1, dtype="float32", blocksize=BLOCKSIZE,
+            callback=lambda *a: self._audio_callback(gen, *a),
         )
-        stream.start()
+        try:
+            stream.start()
+        except Exception:
+            try:
+                stream.close()
+            except Exception:
+                pass
+            raise
         self._last_cb = time.monotonic()
         return stream
 
@@ -368,6 +381,7 @@ class Daemon:
         in place for every following recording ("Recording too short")."""
         with self._stream_lock:
             stream, self._stream = self._stream, None
+            self._gen += 1  # silence its callback even if close() hangs
             # The next stream starts cold: its pre-roll must not replay the
             # tail of this one.
             self._prebuf.clear()
@@ -385,7 +399,21 @@ class Daemon:
         t.start()
         t.join(timeout=2)
         if t.is_alive():
+            # PortAudio is now stuck in that thread: an in-process reset
+            # (Pa_Terminate) could hang on it too, so recovery must restart.
+            self._abandoned = True
             print("⚠️  mic stream close hung — abandoned it", flush=True)
+
+    @staticmethod
+    def _restart_daemon():
+        """Exit so the LaunchAgent (KeepAlive) relaunches a fresh process with
+        a clean Core Audio session — the recovery that always works."""
+        print("⚠️  Microphone not responding — restarting the daemon, "
+              "please repeat in a few seconds", flush=True)
+        _notify("Whisper Dictation",
+                "Microphone stopped responding — restarting, "
+                "please repeat in a few seconds")
+        os._exit(1)
 
     def _reset_audio(self):
         """Reinitialise PortAudio to recover a stale Core Audio session after
@@ -470,20 +498,17 @@ class Daemon:
                 # restart — a fresh process always recovers, and KeepAlive
                 # relaunches the daemon in ~3 s.
                 self._dead_streak += 1
-                if self._dead_streak == 1:
+                if self._dead_streak == 1 and not self._abandoned:
                     print("⚠️  Microphone delivered no audio — resetting audio, "
                           "please repeat", flush=True)
                     self._reset_audio()
                     return
-                print("⚠️  Microphone still silent — restarting the daemon, "
-                      "please repeat in a few seconds", flush=True)
-                _notify("Whisper Dictation",
-                        "Microphone stopped responding — restarting, "
-                        "please repeat in a few seconds")
-                os._exit(1)
+                self._restart_daemon()
             if self._rec_samples:
                 self._dead_streak = 0
             if not frames:
+                if self._abandoned:
+                    self._restart_daemon()
                 print("⚠️  Empty recording — resetting audio after sleep, please repeat",
                       flush=True)
                 self._reset_audio()

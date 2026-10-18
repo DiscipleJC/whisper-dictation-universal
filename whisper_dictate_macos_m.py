@@ -43,6 +43,13 @@ LANGUAGE = None
 # local-copy workaround if you need the smaller model.
 MODEL = "mlx-community/whisper-large-v3-turbo"
 RATE = 16000
+# Explicit block size: left at 0 (PortAudio's choice), macOS 26/27 delivers
+# 15-sample blocks — ~1000 callbacks/s, and the 128-block pre-roll buffer then
+# held only ~0.12 s instead of PREROLL_SEC. 512 samples = 32 ms per block.
+BLOCKSIZE = 512
+# A recording held at least this long that got no live audio at all means the
+# mic stream has stalled (open, but Core Audio stopped calling back).
+STALL_SEC = 0.5
 STATS_LOG = Path.home() / "Library" / "Logs" / "whisper-dictation-stats.jsonl"
 IPC_HOST = "127.0.0.1"
 IPC_PORT = 18765
@@ -270,6 +277,14 @@ class Daemon:
         self._last_activity = time.monotonic()
         self._media_toggled = False
         self._prebuf = deque(maxlen=128)
+        # Guards opening/closing the stream, so the keep-warm watchdog can't
+        # close it in the middle of start_recording() reusing it.
+        self._stream_lock = threading.RLock()
+        self._last_cb = 0.0       # monotonic time of the last audio callback
+        self._rec_samples = 0     # live samples captured by this recording
+        self._rec_started = 0.0
+        self._rec_held = 0.0      # how long the hotkey was held
+        self._dead_streak = 0     # recordings in a row with no live audio
 
     @property
     def state(self):
@@ -281,10 +296,12 @@ class Daemon:
 
     def _audio_callback(self, indata, frames, t, status):
         block = indata.copy()
+        self._last_cb = time.monotonic()
         self._prebuf.append(block)
         with self._lock:
             if self._state == "recording":
                 self._frames.append(block)
+                self._rec_samples += len(block)
 
     def _preroll_blocks(self):
         """Recent pre-buffer blocks (~PREROLL_SEC) so the start of speech isn't
@@ -301,24 +318,37 @@ class Daemon:
         out.reverse()
         return out
 
-    def _open_persistent_stream(self):
-        if self._stream is not None or self._privacy_mode:
-            return
-        self._stream = sd.InputStream(
+    def _new_stream(self):
+        stream = sd.InputStream(
             samplerate=RATE, channels=1, dtype="float32",
-            callback=self._audio_callback,
+            blocksize=BLOCKSIZE, callback=self._audio_callback,
         )
-        self._stream.start()
+        stream.start()
+        self._last_cb = time.monotonic()
+        return stream
+
+    def _open_persistent_stream(self):
+        with self._stream_lock:
+            if self._stream is not None or self._privacy_mode:
+                return
+            self._stream = self._new_stream()
+
+    def _stream_is_stale(self):
+        """An open stream that has stopped calling back. A live stream calls
+        back every BLOCKSIZE/RATE (32 ms); half a second of silence means
+        Core Audio has dropped it."""
+        return (self._stream is not None
+                and time.monotonic() - self._last_cb > STALL_SEC)
 
     def _open_stream_for_recording(self):
+        if self._stream is not None and self._stream_is_stale():
+            print("⚠️  Warm mic stream stopped delivering audio — reopening",
+                  flush=True)
+            self._close_stream()
         if self._stream is not None:
             return True
         try:
-            self._stream = sd.InputStream(
-                samplerate=RATE, channels=1, dtype="float32",
-                callback=self._audio_callback,
-            )
-            self._stream.start()
+            self._stream = self._new_stream()
             return True
         except Exception as e:
             print(f"⚠️  PortAudio open failed: {e}", flush=True)
@@ -332,10 +362,30 @@ class Daemon:
             return False
 
     def _close_stream(self):
-        if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+        """Detach the stream first, then shut it down off-thread with a
+        timeout: on a stalled Core Audio stream stop() can block forever,
+        which used to freeze the keep-warm watchdog and leave the dead stream
+        in place for every following recording ("Recording too short")."""
+        with self._stream_lock:
+            stream, self._stream = self._stream, None
+            # The next stream starts cold: its pre-roll must not replay the
+            # tail of this one.
+            self._prebuf.clear()
+        if stream is None:
+            return
+
+        def shutdown():
+            try:
+                stream.abort()   # abort, not stop: don't wait to drain buffers
+                stream.close()
+            except Exception as e:
+                print(f"⚠️  mic stream close failed: {e}", flush=True)
+
+        t = threading.Thread(target=shutdown, daemon=True)
+        t.start()
+        t.join(timeout=2)
+        if t.is_alive():
+            print("⚠️  mic stream close hung — abandoned it", flush=True)
 
     def _reset_audio(self):
         """Reinitialise PortAudio to recover a stale Core Audio session after
@@ -374,13 +424,20 @@ class Daemon:
         return time.monotonic() - self._last_activity
 
     def start_recording(self):
+        with self._stream_lock:
+            return self._start_recording_locked()
+
+    def _start_recording_locked(self):
         if self._state != "idle":
             return False
         with self._lock:
-            self._frames = self._preroll_blocks()
+            # A stale stream's pre-buffer is old audio — don't seed with it.
+            self._frames = [] if self._stream_is_stale() else self._preroll_blocks()
+            self._rec_samples = 0
         if not self._open_stream_for_recording():
             print("⚠️  Recording did not start (PortAudio error)", flush=True)
             return False
+        self._rec_started = time.monotonic()
         self._state = "recording"
         self._last_activity = time.monotonic()
         print("🎙  Recording...", flush=True)
@@ -390,6 +447,7 @@ class Daemon:
     def stop_recording(self):
         if self._state != "recording":
             return False
+        self._rec_held = time.monotonic() - self._rec_started
         self._state = "transcribing"
         threading.Thread(target=self._do_transcribe, daemon=True).start()
         return True
@@ -405,6 +463,26 @@ class Daemon:
         try:
             with self._lock:
                 frames = list(self._frames)
+            if self._rec_held >= STALL_SEC and self._rec_samples == 0:
+                # The hotkey was held, but the mic delivered nothing (only the
+                # pre-roll, if any): Core Audio has wedged the stream. First
+                # try the in-process reset; if the next recording is dead too,
+                # restart — a fresh process always recovers, and KeepAlive
+                # relaunches the daemon in ~3 s.
+                self._dead_streak += 1
+                if self._dead_streak == 1:
+                    print("⚠️  Microphone delivered no audio — resetting audio, "
+                          "please repeat", flush=True)
+                    self._reset_audio()
+                    return
+                print("⚠️  Microphone still silent — restarting the daemon, "
+                      "please repeat in a few seconds", flush=True)
+                _notify("Whisper Dictation",
+                        "Microphone stopped responding — restarting, "
+                        "please repeat in a few seconds")
+                os._exit(1)
+            if self._rec_samples:
+                self._dead_streak = 0
             if not frames:
                 print("⚠️  Empty recording — resetting audio after sleep, please repeat",
                       flush=True)
@@ -638,10 +716,17 @@ def start_keepwarm_watchdog():
     def loop():
         while True:
             time.sleep(2)
-            if (daemon.state == "idle" and daemon.privacy_mode
-                    and daemon._stream is not None
-                    and daemon.seconds_since_activity() >= KEEP_WARM_SEC):
-                daemon._close_stream()
+            try:
+                # Under the stream lock, so a hotkey press can't reuse the
+                # stream while it is being closed.
+                with daemon._stream_lock:
+                    if (daemon.state == "idle" and daemon.privacy_mode
+                            and daemon._stream is not None
+                            and daemon.seconds_since_activity() >= KEEP_WARM_SEC):
+                        daemon._close_stream()
+            except Exception as e:
+                # Never let one failure kill the watchdog thread for good.
+                print(f"⚠️  keep-warm watchdog: {e}", flush=True)
     threading.Thread(target=loop, daemon=True).start()
 
 

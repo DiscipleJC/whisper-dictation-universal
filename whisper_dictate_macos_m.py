@@ -390,10 +390,14 @@ class Daemon:
                 # The next stream starts cold: its pre-roll must not replay
                 # the tail of this one.
                 self._prebuf.clear()
+                if stream is not None:
+                    # Registered before the stream lock is released, so a
+                    # reset can never see "nothing closing" in between.
+                    self._closing += 1
         if stream is not None:
-            self._shutdown_stream(stream)
+            self._shutdown_stream(stream, registered=True)
 
-    def _shutdown_stream(self, stream):
+    def _shutdown_stream(self, stream, registered=False):
         """abort() + close() off-thread, waiting at most 2 s."""
         def shutdown():
             try:
@@ -405,8 +409,9 @@ class Daemon:
                 with self._lock:
                     self._closing -= 1
 
-        with self._lock:
-            self._closing += 1
+        if not registered:
+            with self._lock:
+                self._closing += 1
 
         t = threading.Thread(target=shutdown, daemon=True)
         t.start()
@@ -432,13 +437,16 @@ class Daemon:
         """Reinitialise PortAudio to recover a stale Core Audio session after
         sleep (recordings come back empty). Avoids a full process restart."""
         try:
-            self._close_stream()
-            if self._abandoned or self._closing:
-                # A close is hung or still running (maybe on another thread):
-                # Pa_Terminate would race or hang on it.
-                self._restart_daemon()
-            sd._terminate()
-            sd._initialize()
+            # Held through terminate, so no stream can open or start closing
+            # while PortAudio is torn down.
+            with self._stream_lock:
+                self._close_stream()
+                if self._abandoned or self._closing:
+                    # A close is hung or still running (maybe on another
+                    # thread): Pa_Terminate would race or hang on it.
+                    self._restart_daemon()
+                sd._terminate()
+                sd._initialize()
             print("🔁 Audio reinitialised (after sleep)", flush=True)
         except Exception as e:
             print(f"⚠️  audio reset failed: {e}", flush=True)

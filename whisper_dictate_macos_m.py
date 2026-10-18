@@ -287,6 +287,7 @@ class Daemon:
         self._dead_streak = 0     # recordings in a row with no live audio
         self._gen = 0             # id of the current stream; older ones are ignored
         self._abandoned = False   # a stream close hung inside PortAudio
+        self._closing = 0         # stream shutdowns still running
 
     @property
     def state(self):
@@ -335,6 +336,9 @@ class Daemon:
         try:
             stream.start()
         except Exception:
+            with self._lock:
+                self._gen += 1  # it may have half-started: drop its audio
+                self._prebuf.clear()
             self._shutdown_stream(stream)
             raise
         self._last_cb = time.monotonic()
@@ -397,6 +401,12 @@ class Daemon:
                 stream.close()
             except Exception as e:
                 print(f"⚠️  mic stream close failed: {e}", flush=True)
+            finally:
+                with self._lock:
+                    self._closing -= 1
+
+        with self._lock:
+            self._closing += 1
 
         t = threading.Thread(target=shutdown, daemon=True)
         t.start()
@@ -423,8 +433,10 @@ class Daemon:
         sleep (recordings come back empty). Avoids a full process restart."""
         try:
             self._close_stream()
-            if self._abandoned:
-                self._restart_daemon()  # Pa_Terminate would hang on it
+            if self._abandoned or self._closing:
+                # A close is hung or still running (maybe on another thread):
+                # Pa_Terminate would race or hang on it.
+                self._restart_daemon()
             sd._terminate()
             sd._initialize()
             print("🔁 Audio reinitialised (after sleep)", flush=True)

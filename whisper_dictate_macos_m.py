@@ -398,11 +398,12 @@ class Daemon:
                 # the tail of this one.
                 self._prebuf.clear()
                 if stream is not None:
-                    # Registered before the stream lock is released, so a
-                    # reset can never see "nothing closing" in between.
                     self._closing += 1
-        if stream is not None:
-            self._shutdown_stream(stream, registered=True)
+            # Still under the stream lock: an open waits out the shutdown
+            # (at most 2 s) and then sees _abandoned, instead of entering
+            # PortAudio while abort() may be hung there.
+            if stream is not None:
+                self._shutdown_stream(stream, registered=True)
 
     def _shutdown_stream(self, stream, registered=False):
         """abort() + close() off-thread, waiting at most 2 s."""

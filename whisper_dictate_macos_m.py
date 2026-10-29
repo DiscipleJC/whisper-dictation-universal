@@ -348,6 +348,8 @@ class Daemon:
         with self._stream_lock:
             if self._stream is not None or self._privacy_mode:
                 return
+            if self._abandoned:
+                self._restart_daemon(idle=True)  # an open would hang too
             self._stream = self._new_stream()
 
     def _stream_is_stale(self):
@@ -362,6 +364,11 @@ class Daemon:
             print("⚠️  Warm mic stream stopped delivering audio — reopening",
                   flush=True)
             self._close_stream()
+        if self._abandoned:
+            # PortAudio is stuck in a hung close: opening a new stream would
+            # block too — here on the hotkey thread, freezing every later key
+            # press with no log line at all. Only a fresh process recovers.
+            self._restart_daemon()
         if self._stream is not None:
             return True
         try:
@@ -391,11 +398,12 @@ class Daemon:
                 # the tail of this one.
                 self._prebuf.clear()
                 if stream is not None:
-                    # Registered before the stream lock is released, so a
-                    # reset can never see "nothing closing" in between.
                     self._closing += 1
-        if stream is not None:
-            self._shutdown_stream(stream, registered=True)
+            # Still under the stream lock: an open waits out the shutdown
+            # (at most 2 s) and then sees _abandoned, instead of entering
+            # PortAudio while abort() may be hung there.
+            if stream is not None:
+                self._shutdown_stream(stream, registered=True)
 
     def _shutdown_stream(self, stream, registered=False):
         """abort() + close() off-thread, waiting at most 2 s."""
@@ -423,9 +431,14 @@ class Daemon:
             print("⚠️  mic stream close hung — abandoned it", flush=True)
 
     @staticmethod
-    def _restart_daemon():
+    def _restart_daemon(idle=False):
         """Exit so the LaunchAgent (KeepAlive) relaunches a fresh process with
-        a clean Core Audio session — the recovery that always works."""
+        a clean Core Audio session — the recovery that always works.
+        idle=True: nobody is dictating, so restart quietly (no notification)."""
+        if idle:
+            print("⚠️  Mic stream close hung while idle — restarting the "
+                  "daemon", flush=True)
+            os._exit(1)
         print("⚠️  Microphone not responding — restarting the daemon, "
               "please repeat in a few seconds", flush=True)
         _notify("Whisper Dictation",
@@ -774,6 +787,10 @@ def start_keepwarm_watchdog():
                             and daemon._stream is not None
                             and daemon.seconds_since_activity() >= KEEP_WARM_SEC):
                         daemon._close_stream()
+                        if daemon._abandoned:
+                            # Restart now, while idle, rather than on the
+                            # next hotkey press.
+                            daemon._restart_daemon(idle=True)
             except Exception as e:
                 # Never let one failure kill the watchdog thread for good.
                 print(f"⚠️  keep-warm watchdog: {e}", flush=True)

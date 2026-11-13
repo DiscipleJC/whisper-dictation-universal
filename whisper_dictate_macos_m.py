@@ -122,6 +122,67 @@ except ImportError:
     pass
 
 
+# ── Clipboard snapshot/restore ────────────────────────────────────────────────
+# pyperclip sees only the plain-text string. With a screenshot, a file or rich
+# content on the clipboard, pyperclip.paste() returns nothing usable, the
+# restore was skipped and the dictated text stayed on the clipboard — the
+# user's image was gone and every Cmd+V kept pasting the last dictation. These
+# helpers copy EVERY pasteboard item with EVERY type as raw bytes and put them
+# all back, and use the pasteboard changeCount (not a string compare) to see
+# whether the user copied something else in the meantime.
+
+def _pasteboard():
+    from AppKit import NSPasteboard
+    return NSPasteboard.generalPasteboard()
+
+
+def _pasteboard_change_count():
+    """Counter macOS bumps on every write to the general pasteboard.
+    None if AppKit is unavailable."""
+    try:
+        return int(_pasteboard().changeCount())
+    except Exception:
+        return None
+
+
+def _snapshot_pasteboard():
+    """Full copy of the general pasteboard: list of items, each a dict
+    {type: NSData}. [] when the pasteboard is empty. None on failure."""
+    try:
+        items = []
+        for item in (_pasteboard().pasteboardItems() or []):
+            types = {}
+            for t in item.types():
+                data = item.dataForType_(t)
+                if data is not None:
+                    types[str(t)] = data
+            if types:
+                items.append(types)
+        return items
+    except Exception:
+        return None
+
+
+def _restore_pasteboard(items):
+    """Replace the general pasteboard with a snapshot from _snapshot_pasteboard.
+    Returns True on success."""
+    try:
+        from AppKit import NSPasteboardItem
+        board = _pasteboard()
+        board.clearContents()
+        objs = []
+        for types in items:
+            it = NSPasteboardItem.alloc().init()
+            for t, data in types.items():
+                it.setData_forType_(data, t)
+            objs.append(it)
+        if objs:
+            return bool(board.writeObjects_(objs))
+        return True
+    except Exception:
+        return False
+
+
 def _notify(title, message):
     """Best-effort macOS notification via osascript. Never raises."""
     try:
@@ -625,22 +686,19 @@ class Daemon:
                 # Paste at the cursor via the clipboard, then hand the clipboard
                 # back to whatever the user had before, so dictation never leaves
                 # its text stuck in the clipboard (hijacking the next Cmd+V).
-                try:
-                    prev_clip = pyperclip.paste()
-                except Exception:
-                    prev_clip = None
+                prev_items = _snapshot_pasteboard()   # every item, every type
                 pyperclip.copy(payload)
+                our_change = _pasteboard_change_count()
                 time.sleep(0.1)
                 v_key = KeyCode.from_vk(9)
                 with self.kb.pressed(Key.cmd):
                     self.kb.press(v_key)
                     self.kb.release(v_key)
-                if prev_clip is not None:
-                    threading.Thread(
-                        target=self._restore_clipboard,
-                        args=(prev_clip, payload),
-                        daemon=True,
-                    ).start()
+                threading.Thread(
+                    target=self._restore_clipboard,
+                    args=(prev_items, our_change, payload),
+                    daemon=True,
+                ).start()
         finally:
             self._state = "idle"
             self._last_activity = time.monotonic()
@@ -651,17 +709,42 @@ class Daemon:
             self._resume_media()
 
     @staticmethod
-    def _restore_clipboard(prev_clip, ours, delay=0.4):
+    def _restore_clipboard(prev_items, our_change, ours, delay=0.4):
         """Give the frontmost app time to read the pasteboard for Cmd+V, then
-        put the user's previous clipboard back. Guarded: only restore if the
-        clipboard still holds OUR dictated text — if the user copied something
-        else in the meantime, leave their copy alone (no clobber)."""
+        put the user's previous clipboard back — ALL items and types (text,
+        image, files), not just the plain string. Guarded by the pasteboard
+        changeCount: if anything wrote to the pasteboard after our copy (the
+        user copied something), leave it alone. Every outcome is logged, so a
+        "my clipboard is stuck" report can be read off the log."""
         time.sleep(delay)
         try:
-            if pyperclip.paste() == ours:
-                pyperclip.copy(prev_clip)
-        except Exception:
-            pass
+            now = _pasteboard_change_count()
+            if our_change is not None and now is not None:
+                if now != our_change:
+                    print("📋 Clipboard left alone — changed since paste "
+                          "(user copied something)\n", flush=True)
+                    return
+            elif pyperclip.paste() != ours:      # AppKit unavailable: string fallback
+                print("📋 Clipboard left alone — no longer holds our text\n", flush=True)
+                return
+            # Nothing to put back (empty before, or the snapshot failed): keep
+            # the dictated text on the clipboard, as before. Clearing it would
+            # only mean that a paste into the wrong window is gone for good.
+            if prev_items is None:
+                print("📋 Clipboard left as is — could not snapshot what was there "
+                      "before, dictated text stays for Cmd+V\n", flush=True)
+                return
+            if not prev_items:
+                print("📋 Clipboard was empty before dictation — dictated text "
+                      "left in it for Cmd+V\n", flush=True)
+                return
+            ok = _restore_pasteboard(prev_items)
+            ntypes = sum(len(t) for t in prev_items)
+            kinds = sorted({k.split('.')[-1] for t in prev_items for k in t})[:4]
+            print(f"📋 Clipboard restored ({len(prev_items)} item(s), {ntypes} type(s): "
+                  f"{', '.join(kinds)}){'' if ok else ' — write FAILED'}\n", flush=True)
+        except Exception as e:
+            print(f"📋 Clipboard restore error: {e!r}\n", flush=True)
 
     def _log_stats(self, text, audio_sec, transcribe_sec, language):
         entry = {

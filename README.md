@@ -343,6 +343,7 @@ The mlx dictation script imports it on startup and applies any of these override
 | `AUTO_PAUSE_MEDIA` | `False` | Pause/resume whatever is playing (browser, Music, Spotify) while you dictate. Off by default because on macOS 15.4+/26 the "is playing" gate is unreliable and a stray media key can launch Music.app; set `True` to opt in |
 | `SPOKEN_PUNCTUATION` | `False` | Turn spoken commands ("new line", "comma", …) into real punctuation |
 | `KEEP_WARM_SEC` | `8` | Keep the mic warm N seconds after a dictation so the next one isn't clipped; `0` = close immediately (max privacy) |
+| `PASTE_ONLY_IF_SAME_APP` | `True` | Don't paste if you switched to another app while dictating — leave the text on the clipboard and notify; `False` = always paste |
 
 ### Dictation features (macOS / mlx backend)
 

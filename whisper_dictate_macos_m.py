@@ -19,6 +19,7 @@ import ctypes.util
 import http.server
 import json
 import os
+import queue
 import re
 import socketserver
 import subprocess
@@ -72,6 +73,11 @@ BLOCKSIZE = 512
 # A recording held at least this long that got no live audio at all means the
 # mic stream has stalled (open, but Core Audio stopped calling back).
 STALL_SEC = 0.5
+# Every PortAudio call (open / abort / close / terminate) runs on one worker
+# thread; the hotkey callback only queues work for it. A call that has not
+# returned after this many seconds is stuck inside Core Audio: the daemon then
+# exits and the LaunchAgent (KeepAlive) starts a fresh process.
+AUDIO_CALL_TIMEOUT_SEC = 15
 STATS_LOG = Path.home() / "Library" / "Logs" / "whisper-dictation-stats.jsonl"
 IPC_HOST = "127.0.0.1"
 IPC_PORT = 18765
@@ -285,7 +291,7 @@ def _front_app():
     """(pid, name) of the application that owns the keyboard focus right now,
     or None if it cannot be determined. One window-server lookup, about a
     millisecond — still not called from the hotkey callback itself (see
-    _start_recording_locked)."""
+    start_recording)."""
     try:
         app = _front_running_app()
         if app is None:
@@ -611,17 +617,24 @@ class Daemon:
         self._last_activity = time.monotonic()
         self._media_toggled = False
         self._prebuf = deque(maxlen=128)
-        # Guards opening/closing the stream, so the keep-warm watchdog can't
-        # close it in the middle of start_recording() reusing it.
-        self._stream_lock = threading.RLock()
         self._last_cb = 0.0       # monotonic time of the last audio callback
         self._rec_samples = 0     # live samples captured by this recording
         self._rec_started = 0.0
-        self._rec_held = 0.0      # how long the hotkey was held
+        self._mic_ready_at = None # when the mic was open for this recording
+        self._rec_held = 0.0      # how long the mic was open while the hotkey was held
         self._dead_streak = 0     # recordings in a row with no live audio
         self._gen = 0             # id of the current stream; older ones are ignored
-        self._abandoned = False   # a stream close hung inside PortAudio
-        self._closing = 0         # stream shutdowns still running
+        # One thread owns the microphone. Everything that calls into PortAudio
+        # is a job on this queue, so two PortAudio calls can never overlap and
+        # no other thread — above all the hotkey callback — ever waits for one.
+        # macOS stops delivering key events while an event-tap callback has not
+        # returned, so a PortAudio call that wedges there kills the hotkey
+        # without a single log line.
+        self._audio_q = queue.Queue()
+        self._audio_call = None   # (job name, start time) while a job runs
+        self._audio_thread = threading.Thread(
+            target=self._audio_worker, name="audio-worker", daemon=True)
+        self._audio_thread.start()
         self._front_app_at_press = None   # (pid, name) — see _note_front_app
         # True while a recording started by the chord, a double tap or IPC
         # /toggle is running: releasing the push-to-talk key must not end it.
@@ -673,7 +686,30 @@ class Daemon:
         out.reverse()
         return out
 
+    def _audio_worker(self):
+        """The only thread that calls into PortAudio. Each job is timestamped
+        in _audio_call so the hung-call watchdog can see one that never
+        returns (see start_audio_call_watchdog)."""
+        while True:
+            name, job = self._audio_q.get()
+            self._audio_call = (name, time.monotonic())
+            try:
+                job()
+            except Exception as e:
+                print(f"⚠️  audio job {name!r} failed: {e}", flush=True)
+            finally:
+                self._audio_call = None
+
+    def _audio_submit(self, name, job):
+        """Queue a job for the audio worker and return at once."""
+        self._audio_q.put((name, job))
+
+    def _warn_off_thread(self, what):
+        if threading.current_thread() is not self._audio_thread:
+            print(f"⚠️  {what} called off the audio worker thread", flush=True)
+
     def _new_stream(self):
+        self._warn_off_thread("_new_stream")
         with self._lock:
             self._gen += 1
             gen = self._gen
@@ -687,18 +723,20 @@ class Daemon:
             with self._lock:
                 self._gen += 1  # it may have half-started: drop its audio
                 self._prebuf.clear()
-            self._shutdown_stream(stream)
+            try:
+                stream.abort()
+                stream.close()
+            except Exception:
+                pass
             raise
         self._last_cb = time.monotonic()
         return stream
 
     def _open_persistent_stream(self):
-        with self._stream_lock:
-            if self._stream is not None or self._privacy_mode:
-                return
-            if self._abandoned:
-                self._restart_daemon(idle=True)  # an open would hang too
-            self._stream = self._new_stream()
+        """Worker job."""
+        if self._stream is not None or self._privacy_mode:
+            return
+        self._stream = self._new_stream()
 
     def _stream_is_stale(self):
         """An open stream that has stopped calling back. A live stream calls
@@ -708,15 +746,11 @@ class Daemon:
                 and time.monotonic() - self._last_cb > STALL_SEC)
 
     def _open_stream_for_recording(self):
+        """Worker thread only."""
         if self._stream is not None and self._stream_is_stale():
             print("⚠️  Warm mic stream stopped delivering audio — reopening",
                   flush=True)
             self._close_stream()
-        if self._abandoned:
-            # PortAudio is stuck in a hung close: opening a new stream would
-            # block too — here on the hotkey thread, freezing every later key
-            # press with no log line at all. Only a fresh process recovers.
-            self._restart_daemon()
         if self._stream is not None:
             return True
         try:
@@ -724,59 +758,26 @@ class Daemon:
             return True
         except Exception as e:
             print(f"⚠️  PortAudio open failed: {e}", flush=True)
-            # Clean up a partially-created stream
-            if self._stream is not None:
-                try:
-                    self._stream.close()
-                except Exception:
-                    pass
-                self._stream = None
+            self._stream = None
             return False
 
     def _close_stream(self):
-        """Detach the stream first, then shut it down off-thread with a
-        timeout: on a stalled Core Audio stream stop() can block forever,
-        which used to freeze the keep-warm watchdog and leave the dead stream
-        in place for every following recording ("Recording too short")."""
-        with self._stream_lock:
-            stream, self._stream = self._stream, None
-            with self._lock:
-                self._gen += 1  # silence its callback even if close() hangs
-                # The next stream starts cold: its pre-roll must not replay
-                # the tail of this one.
-                self._prebuf.clear()
-                if stream is not None:
-                    self._closing += 1
-            # Still under the stream lock: an open waits out the shutdown
-            # (at most 2 s) and then sees _abandoned, instead of entering
-            # PortAudio while abort() may be hung there.
-            if stream is not None:
-                self._shutdown_stream(stream, registered=True)
-
-    def _shutdown_stream(self, stream, registered=False):
-        """abort() + close() off-thread, waiting at most 2 s."""
-        def shutdown():
+        """Worker thread only. Detach the stream, then abort + close it. If
+        Core Audio wedges in here nothing else is held up: the hotkey only
+        queues jobs, and the hung-call watchdog restarts the daemon."""
+        self._warn_off_thread("_close_stream")
+        stream, self._stream = self._stream, None
+        with self._lock:
+            self._gen += 1  # silence its callback even if close() hangs
+            # The next stream starts cold: its pre-roll must not replay the
+            # tail of this one.
+            self._prebuf.clear()
+        if stream is not None:
             try:
                 stream.abort()   # abort, not stop: don't wait to drain buffers
                 stream.close()
             except Exception as e:
                 print(f"⚠️  mic stream close failed: {e}", flush=True)
-            finally:
-                with self._lock:
-                    self._closing -= 1
-
-        if not registered:
-            with self._lock:
-                self._closing += 1
-
-        t = threading.Thread(target=shutdown, daemon=True)
-        t.start()
-        t.join(timeout=2)
-        if t.is_alive():
-            # PortAudio is now stuck in that thread: an in-process reset
-            # (Pa_Terminate) could hang on it too, so recovery must restart.
-            self._abandoned = True
-            print("⚠️  mic stream close hung — abandoned it", flush=True)
 
     @staticmethod
     def _restart_daemon(idle=False):
@@ -784,7 +785,7 @@ class Daemon:
         a clean Core Audio session — the recovery that always works.
         idle=True: nobody is dictating, so restart quietly (no notification)."""
         if idle:
-            print("⚠️  Mic stream close hung while idle — restarting the "
+            print("⚠️  Microphone call hung while idle — restarting the "
                   "daemon", flush=True)
             os._exit(1)
         print("⚠️  Microphone not responding — restarting the daemon, "
@@ -795,30 +796,24 @@ class Daemon:
         os._exit(1)
 
     def _reset_audio(self):
-        """Reinitialise PortAudio to recover a stale Core Audio session after
-        sleep (recordings come back empty). Avoids a full process restart."""
+        """Worker job: reinitialise PortAudio to recover a stale Core Audio
+        session (recordings come back empty). Avoids a full process restart.
+        No other PortAudio call can be in flight — they all run on this
+        thread — so Pa_Terminate has nothing to race with."""
+        self._warn_off_thread("_reset_audio")
         try:
-            # Held through terminate, so no stream can open or start closing
-            # while PortAudio is torn down.
-            with self._stream_lock:
-                self._close_stream()
-                if self._abandoned or self._closing:
-                    # A close is hung or still running (maybe on another
-                    # thread): Pa_Terminate would race or hang on it.
-                    self._restart_daemon()
-                sd._terminate()
-                sd._initialize()
+            self._close_stream()
+            sd._terminate()
+            sd._initialize()
             print("🔁 Audio reinitialised (after sleep)", flush=True)
         except Exception as e:
             print(f"⚠️  audio reset failed: {e}", flush=True)
 
     def _reinit_after_open_failure(self):
-        """Rebuild PortAudio after an open was refused. There is no stream to
-        tear down at this point. Returns False if it is not safe to do (a
-        stream close is hung or still running — Pa_Terminate would race or
-        hang on it) or if the rebuild itself failed."""
-        if self._abandoned or self._closing:
-            return False
+        """Worker thread only: rebuild PortAudio after an open was refused.
+        There is no stream to tear down at this point, and no other PortAudio
+        call can be in flight. Returns False if the rebuild itself failed."""
+        self._warn_off_thread("_reinit_after_open_failure")
         try:
             sd._terminate()
             sd._initialize()
@@ -828,6 +823,49 @@ class Daemon:
         except Exception as e:
             print(f"⚠️  audio reset failed: {e}", flush=True)
             return False
+
+    def _job_start_capture(self):
+        """Open the mic for a recording that start_recording() already
+        claimed. By the time this runs the user may have released the hotkey
+        already; the finish job is queued behind this one, so the order
+        open → finish always holds."""
+        if self._state != "recording":
+            return
+        if not self._open_stream_for_recording():
+            # A refused open usually means PortAudio still holds the devices of
+            # a coreaudiod that has been restarted since (an audio driver
+            # install or update does that). Rebuild PortAudio and try once
+            # more — here on the worker, so a coreaudiod that wedges during
+            # Pa_Terminate cannot stall the hotkey.
+            if not (self._reinit_after_open_failure()
+                    and self._open_stream_for_recording()):
+                print("⚠️  Recording did not start (PortAudio error)", flush=True)
+                # toggle() / hotkey_down() already got True from
+                # start_recording(): take the hands-free claim back with the
+                # state, or the next press would start a recording that
+                # releasing the key no longer ends.
+                self._hands_free = False
+                self._tap_pending = None
+                self._state = "idle"
+                return
+        # The dead-microphone test counts from here, not from the key press:
+        # the press no longer waits for the open, so a slow open (a Bluetooth
+        # mic can take a second) must not look like a mic that delivers nothing.
+        self._mic_ready_at = time.monotonic()
+        self._pause_media()
+
+    def _job_finish_capture(self):
+        """Queued by stop_recording(), so it runs after the open job and
+        transcription never reads a stream that has not finished opening.
+        Transcription itself takes seconds and gets its own thread."""
+        threading.Thread(target=self._do_transcribe, daemon=True).start()
+
+    def _job_close_if_idle(self, min_idle_sec=0):
+        """Close the warm mic. Re-checks the state here, on the worker: a
+        dictation may have started while this job sat in the queue."""
+        if (self._state == "idle" and self._privacy_mode
+                and self.seconds_since_activity() >= min_idle_sec):
+            self._close_stream()
 
     def _pause_media(self):
         """Pause whatever is playing — but only if audio is actually playing,
@@ -847,35 +885,26 @@ class Daemon:
         self._last_activity = time.monotonic()
         if self._state == "idle":
             if self._privacy_mode:
-                self._close_stream()
+                self._audio_submit("close-for-privacy", self._job_close_if_idle)
             else:
-                self._open_persistent_stream()
+                self._audio_submit("open-persistent", self._open_persistent_stream)
 
     def seconds_since_activity(self):
         return time.monotonic() - self._last_activity
 
     def start_recording(self):
-        with self._stream_lock:
-            return self._start_recording_locked()
-
-    def _start_recording_locked(self):
+        """Runs in the hotkey (event-tap) callback: claims the recording and
+        queues the mic open, never waits for PortAudio. A warm stream is
+        already feeding _frames from this moment; a cold one starts when the
+        worker has opened it."""
         if self._state != "idle":
             return False
         with self._lock:
             # A stale stream's pre-buffer is old audio — don't seed with it.
             self._frames = [] if self._stream_is_stale() else self._preroll_blocks()
             self._rec_samples = 0
-        if not self._open_stream_for_recording():
-            # A refused open usually means PortAudio still holds the devices of
-            # a coreaudiod that has been restarted since (an audio driver
-            # install or update does that): every press then fails with
-            # PaErrorCode -9986 until the daemon is restarted by hand.
-            # Rebuild PortAudio and try once more.
-            if not (self._reinit_after_open_failure()
-                    and self._open_stream_for_recording()):
-                print("⚠️  Recording did not start (PortAudio error)", flush=True)
-                return False
         self._rec_started = time.monotonic()
+        self._mic_ready_at = None
         # Remember the application the user is dictating INTO. Looked up on a
         # helper thread: this runs in the hotkey callback, and an Accessibility
         # query must not be able to hold it up.
@@ -887,11 +916,11 @@ class Daemon:
         self._state = "recording"
         self._last_activity = time.monotonic()
         print("🎙  Recording...", flush=True)
-        self._pause_media()
+        self._audio_submit("open-for-recording", self._job_start_capture)
         return True
 
     def _note_front_app(self, started_at):
-        """Helper-thread half of _start_recording_locked. The token keeps a
+        """Helper-thread half of start_recording. The token keeps a
         slow lookup from a previous press from overwriting the current one."""
         app = _front_app()
         if self._rec_started == started_at:
@@ -912,11 +941,13 @@ class Daemon:
     def stop_recording(self):
         if self._state != "recording":
             return False
-        self._rec_held = time.monotonic() - self._rec_started
+        ready = self._mic_ready_at
+        self._rec_held = time.monotonic() - ready if ready is not None else 0.0
         self._hands_free = False
         self._tap_pending = None
         self._state = "transcribing"
-        threading.Thread(target=self._do_transcribe, daemon=True).start()
+        # Queued, not started here: it lands behind the open job.
+        self._audio_submit("finish-recording", self._job_finish_capture)
         return True
 
     def toggle(self):
@@ -1005,20 +1036,18 @@ class Daemon:
                 # restart — a fresh process always recovers, and KeepAlive
                 # relaunches the daemon in ~3 s.
                 self._dead_streak += 1
-                if self._dead_streak == 1 and not self._abandoned:
+                if self._dead_streak == 1:
                     print("⚠️  Microphone delivered no audio — resetting audio, "
                           "please repeat", flush=True)
-                    self._reset_audio()
+                    self._audio_submit("reset-dead-mic", self._reset_audio)
                     return
                 self._restart_daemon()
             if self._rec_samples:
                 self._dead_streak = 0
             if not frames:
-                if self._abandoned:
-                    self._restart_daemon()
                 print("⚠️  Empty recording — resetting audio after sleep, please repeat",
                       flush=True)
-                self._reset_audio()
+                self._audio_submit("reset-empty", self._reset_audio)
                 return
             audio = np.concatenate(frames).flatten()
             if audio.shape[0] < RATE * 0.3:
@@ -1112,7 +1141,7 @@ class Daemon:
             # Keep the stream warm for KEEP_WARM_SEC (closed later by the
             # keep-warm watchdog); close immediately only if keep-warm is off.
             if self._privacy_mode and KEEP_WARM_SEC <= 0:
-                self._close_stream()
+                self._audio_submit("close-after-dictation", self._job_close_if_idle)
             self._resume_media()
 
     def _type_text(self, text):
@@ -1309,20 +1338,42 @@ def start_keepwarm_watchdog():
         while True:
             time.sleep(2)
             try:
-                # Under the stream lock, so a hotkey press can't reuse the
-                # stream while it is being closed.
-                with daemon._stream_lock:
-                    if (daemon.state == "idle" and daemon.privacy_mode
-                            and daemon._stream is not None
-                            and daemon.seconds_since_activity() >= KEEP_WARM_SEC):
-                        daemon._close_stream()
-                        if daemon._abandoned:
-                            # Restart now, while idle, rather than on the
-                            # next hotkey press.
-                            daemon._restart_daemon(idle=True)
+                # Only asks: the close is a job for the audio worker, which
+                # re-checks the state, so a hotkey press that got in first
+                # keeps its warm stream.
+                if (daemon.state == "idle" and daemon.privacy_mode
+                        and daemon._stream is not None
+                        and daemon.seconds_since_activity() >= KEEP_WARM_SEC):
+                    daemon._audio_submit(
+                        "close-keep-warm",
+                        lambda: daemon._job_close_if_idle(KEEP_WARM_SEC))
             except Exception as e:
                 # Never let one failure kill the watchdog thread for good.
                 print(f"⚠️  keep-warm watchdog: {e}", flush=True)
+    threading.Thread(target=loop, daemon=True).start()
+
+
+def start_audio_call_watchdog():
+    """Restart the daemon when a PortAudio call does not come back. All such
+    calls run on the audio worker, which notes the job it is in; a job still
+    running after AUDIO_CALL_TIMEOUT_SEC is stuck inside Core Audio, and only
+    a new process recovers from that. The job is re-read by identity before
+    exiting, so "the old job ended and another one started" is not mistaken
+    for a hang."""
+    def loop():
+        while True:
+            time.sleep(2)
+            call = daemon._audio_call
+            if call is None:
+                continue
+            name, started = call
+            stuck = time.monotonic() - started
+            if stuck < AUDIO_CALL_TIMEOUT_SEC:
+                continue
+            if daemon._audio_call is not call:
+                continue
+            print(f"🚑 PortAudio job {name!r} stuck for {stuck:.0f}s", flush=True)
+            daemon._restart_daemon(idle=daemon.state == "idle")
     threading.Thread(target=loop, daemon=True).start()
 
 
@@ -1366,12 +1417,14 @@ print(f"  Model   : {MODEL.split('/')[-1]}")
 start_ipc_server()
 start_idle_watchdog()
 start_keepwarm_watchdog()
+start_audio_call_watchdog()
 prewarm_model()
 print(f"  Idle restart: {'disabled' if IDLE_RESTART_SEC <= 0 else str(IDLE_RESTART_SEC) + 's'}")
 print(f"  Keep-warm   : {'off' if KEEP_WARM_SEC <= 0 else str(KEEP_WARM_SEC) + 's (preroll ' + str(PREROLL_SEC) + 's)'}")
 print(f"  Auto-paste  : {'always' if AUTO_PASTE_MAX_SEC <= 0 else 'up to ' + str(AUTO_PASTE_MAX_SEC) + 's, longer → clipboard + notify'}")
 print(f"  Same-app    : {'paste only into the app where dictation started, else clipboard + notify' if PASTE_ONLY_IF_SAME_APP else 'off (always paste)'}")
 print(f"  Insert      : {'keystrokes into Chromium/Electron apps (Brave, Chrome, Slack…), Cmd+V elsewhere' if TYPE_INSTEAD_OF_PASTE == 'chromium' else 'keystrokes everywhere, clipboard untouched' if TYPE_INSTEAD_OF_PASTE == 'always' else 'Cmd+V everywhere'}")
+print(f"  Audio guard : one worker thread owns the mic, restart if a call hangs > {AUDIO_CALL_TIMEOUT_SEC}s")
 print("=" * 45)
 print("  Ctrl+C to quit")
 print()

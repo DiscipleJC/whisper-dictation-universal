@@ -109,6 +109,22 @@ AUTO_PASTE_MAX_SEC = 300
 # paste. Overridable in local_settings.py.
 PASTE_ONLY_IF_SAME_APP = True
 
+# Typing instead of pasting. Applications built on Chromium (Chrome, Brave,
+# Edge; Electron apps such as Slack) can drop a Cmd+V when another process
+# wrote to the clipboard shortly after their previous paste — which is what
+# _restore_clipboard does after every dictation. Measured in Brave and Chrome
+# on macOS 26 with a textarea and a rich-text editor: with the clipboard
+# restore 1 paste in 5 landed (the page received the paste event with the
+# right text and inserted nothing); restore delays up to 3 s did not help;
+# without any restore 4 in 5. Typing the transcript as keystrokes bypasses the
+# clipboard entirely: 220 characters in 0.04 s, nothing dropped, Cyrillic
+# included. Values:
+#   "chromium" — type into Chromium/Electron apps, paste everywhere else
+#   "always"   — type into every application (clipboard never touched)
+#   "never"    — always paste via Cmd+V
+# Overridable in local_settings.py.
+TYPE_INSTEAD_OF_PASTE = "chromium"
+
 INITIAL_PROMPT = (
     "Claude Code, OpenAI, Python, JavaScript, TypeScript, GitHub, Docker, "
     "Kubernetes, API, REST, JSON, SQL, React, Node.js, Linux, macOS, Windows, "
@@ -126,6 +142,7 @@ try:
     KEEP_WARM_SEC = getattr(_local, "KEEP_WARM_SEC", KEEP_WARM_SEC)
     AUTO_PASTE_MAX_SEC = getattr(_local, "AUTO_PASTE_MAX_SEC", AUTO_PASTE_MAX_SEC)
     PASTE_ONLY_IF_SAME_APP = getattr(_local, "PASTE_ONLY_IF_SAME_APP", PASTE_ONLY_IF_SAME_APP)
+    TYPE_INSTEAD_OF_PASTE = getattr(_local, "TYPE_INSTEAD_OF_PASTE", TYPE_INSTEAD_OF_PASTE)
     _extra_prompt = getattr(_local, "EXTRA_PROMPT", "")
     if _extra_prompt:
         INITIAL_PROMPT = f"{INITIAL_PROMPT} {_extra_prompt}"
@@ -252,6 +269,76 @@ def _front_app():
         return (int(app.processIdentifier()), str(name))
     except Exception:
         return None
+
+
+# Chromium-based applications, where Cmd+V is unreliable after a clipboard
+# restore (see TYPE_INSTEAD_OF_PASTE). Browsers are recognised by bundle id,
+# Electron / CEF apps by the framework they ship inside the bundle.
+_CHROMIUM_BUNDLE_PREFIXES = (
+    "com.google.Chrome", "com.brave.Browser", "com.microsoft.edgemac",
+    "org.chromium.Chromium", "com.vivaldi.Vivaldi", "company.thebrowser.Browser",
+    "com.operasoftware.Opera", "ru.yandex.desktop.yandex-browser",
+)
+_CHROMIUM_FRAMEWORKS = ("Electron Framework.framework",
+                        "Chromium Embedded Framework.framework")
+
+
+def _app_engine(bundle_id, bundle_path):
+    """"chromium" if the application renders with Chromium — a Chromium-based
+    browser (by bundle id) or an Electron/CEF app (by the framework inside its
+    bundle) — else None. Pure function: testable without AppKit."""
+    bid = bundle_id or ""
+    if any(bid == p or bid.startswith(p + ".") for p in _CHROMIUM_BUNDLE_PREFIXES):
+        return "chromium"
+    if bundle_path:
+        try:
+            names = set(os.listdir(os.path.join(bundle_path, "Contents", "Frameworks")))
+        except OSError:
+            names = set()
+        if any(n in names for n in _CHROMIUM_FRAMEWORKS):
+            return "chromium"
+    return None
+
+
+def _front_app_engine():
+    """(engine, name) of the focused application — engine as in _app_engine.
+    Called from the transcription thread only."""
+    try:
+        app = _front_running_app()
+        if app is None:
+            return (None, None)
+        url = app.bundleURL()
+        name = app.localizedName() or app.bundleIdentifier() or "?"
+        return (_app_engine(app.bundleIdentifier(), url.path() if url else None), str(name))
+    except Exception as e:
+        print(f"⚠️  Front-app lookup failed ({e!r}) — falling back to Cmd+V", flush=True)
+        return (None, None)
+
+
+def _unicode_typer():
+    """Keyboard controller for _type_text. pynput's Controller builds a
+    "character -> virtual keycode" table ONCE, from the keyboard layout that
+    is active when the controller is created, and sends every character in
+    that table as a bare keycode with no Unicode string attached. The
+    receiving app then translates the keycode through the layout active AT
+    THAT MOMENT — so a daemon started under a Russian layout typing into a
+    window where a Latin one is active turns "ветер" into "dtnth". An empty
+    table makes pynput attach the Unicode string to every character (keycode
+    0 + CGEventKeyboardSetUnicodeString), which is layout-independent. Kept
+    separate from Daemon.kb: Cmd+V there uses a fixed keycode (9)."""
+    kb = Controller()
+    kb._mapping = {}
+    return kb
+
+
+def _should_type(engine):
+    """Type (True) or paste (False) for an application with this engine, per
+    TYPE_INSTEAD_OF_PASTE. Unknown engine → paste unless mode is "always"."""
+    if TYPE_INSTEAD_OF_PASTE == "always":
+        return True
+    if TYPE_INSTEAD_OF_PASTE == "chromium":
+        return engine == "chromium"
+    return False
 
 
 def _notify(title, message):
@@ -399,6 +486,7 @@ def _apply_spoken_punctuation(text):
 class Daemon:
     def __init__(self):
         self.kb = Controller()
+        self.kb_type = _unicode_typer()   # for _type_text only
         self._lock = threading.Lock()
         self._frames = []
         self._state = "idle"  # idle | recording | transcribing
@@ -790,9 +878,23 @@ class Daemon:
                       f"press Cmd+V to paste\n", flush=True)
                 _notify("Whisper Dictation", f"{park[1]} — press Cmd+V to paste")
             else:
+                engine, app_name = _front_app_engine()
+                if _should_type(engine):
+                    # Chromium can drop Cmd+V after a clipboard restore (see
+                    # TYPE_INSTEAD_OF_PASTE): send the transcript as keystrokes;
+                    # the clipboard is not touched and nothing has to be restored.
+                    self._type_text(payload)
+                    why = ("Chromium app" if engine == "chromium"
+                           else "TYPE_INSTEAD_OF_PASTE = always")
+                    print(f"⌨️  Typed into {app_name or '?'} as keystrokes — {why}, "
+                          f"clipboard untouched\n", flush=True)
+                    return
                 # Paste at the cursor via the clipboard, then hand the clipboard
                 # back to whatever the user had before, so dictation never leaves
                 # its text stuck in the clipboard (hijacking the next Cmd+V).
+                # Say WHERE the Cmd+V goes: "it did not insert" reports need it.
+                print(f"📋 Cmd+V into {app_name or '?'} (engine: {engine or 'other'})",
+                      flush=True)
                 prev_items = _snapshot_pasteboard()   # every item, every type
                 pyperclip.copy(payload)
                 our_change = _pasteboard_change_count()
@@ -814,6 +916,21 @@ class Daemon:
             if self._privacy_mode and KEEP_WARM_SEC <= 0:
                 self._close_stream()
             self._resume_media()
+
+    def _type_text(self, text):
+        """Insert the transcript as keystrokes instead of Cmd+V; the clipboard
+        is never touched. A newline is sent as Shift+Return — a bare Return
+        would SEND the message in chat apps, Shift+Return inserts a line break
+        there. Goes through self.kb_type so the text does not depend on which
+        keyboard layout is active in the target window (see _unicode_typer)."""
+        kb = self.kb_type
+        for i, part in enumerate(text.split("\n")):
+            if i:
+                with kb.pressed(Key.shift):
+                    kb.press(Key.enter)
+                    kb.release(Key.enter)
+            if part:
+                kb.type(part)
 
     @staticmethod
     def _restore_clipboard(prev_items, our_change, ours, delay=0.4):
@@ -1049,6 +1166,7 @@ print(f"  Idle restart: {'disabled' if IDLE_RESTART_SEC <= 0 else str(IDLE_RESTA
 print(f"  Keep-warm   : {'off' if KEEP_WARM_SEC <= 0 else str(KEEP_WARM_SEC) + 's (preroll ' + str(PREROLL_SEC) + 's)'}")
 print(f"  Auto-paste  : {'always' if AUTO_PASTE_MAX_SEC <= 0 else 'up to ' + str(AUTO_PASTE_MAX_SEC) + 's, longer → clipboard + notify'}")
 print(f"  Same-app    : {'paste only into the app where dictation started, else clipboard + notify' if PASTE_ONLY_IF_SAME_APP else 'off (always paste)'}")
+print(f"  Insert      : {'keystrokes into Chromium/Electron apps (Brave, Chrome, Slack…), Cmd+V elsewhere' if TYPE_INSTEAD_OF_PASTE == 'chromium' else 'keystrokes everywhere, clipboard untouched' if TYPE_INSTEAD_OF_PASTE == 'always' else 'Cmd+V everywhere'}")
 print("=" * 45)
 print("  Ctrl+C to quit")
 print()

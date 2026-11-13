@@ -49,3 +49,11 @@ KEEP_WARM_SEC = 8
 # deliberately with Cmd+V. 300 s = 5 min. Set 0 to disable the guard (always
 # auto-paste). The transcript is always saved to the log regardless.
 AUTO_PASTE_MAX_SEC = 300
+
+# Same-application guard. If the keyboard focus has moved to a DIFFERENT
+# application between pressing the hotkey and the transcript being ready, the
+# text is not pasted (it would land in the wrong window): it is left on the
+# clipboard and a notification is shown, like the long-recording guard above.
+# Two windows of the same application are not told apart. Set False to always
+# paste into whatever is frontmost.
+PASTE_ONLY_IF_SAME_APP = True

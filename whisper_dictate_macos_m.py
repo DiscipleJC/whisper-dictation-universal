@@ -99,6 +99,16 @@ SPOKEN_PUNCTUATION = False
 # Overridable in local_settings.py.
 AUTO_PASTE_MAX_SEC = 300
 
+# Same-application guard. Independent of the length guard above: remember which
+# application has the keyboard focus when the hotkey goes DOWN, and if a
+# different application has it when the transcript is ready, do NOT send
+# Cmd+V — it would land in the wrong window and the text would look lost.
+# Instead the transcript is left on the clipboard and a notification is shown,
+# exactly like the long-recording guard. Application level only: moving between
+# two windows of the SAME application is not detected. Set False to always
+# paste. Overridable in local_settings.py.
+PASTE_ONLY_IF_SAME_APP = True
+
 INITIAL_PROMPT = (
     "Claude Code, OpenAI, Python, JavaScript, TypeScript, GitHub, Docker, "
     "Kubernetes, API, REST, JSON, SQL, React, Node.js, Linux, macOS, Windows, "
@@ -115,11 +125,72 @@ try:
     SPOKEN_PUNCTUATION = getattr(_local, "SPOKEN_PUNCTUATION", SPOKEN_PUNCTUATION)
     KEEP_WARM_SEC = getattr(_local, "KEEP_WARM_SEC", KEEP_WARM_SEC)
     AUTO_PASTE_MAX_SEC = getattr(_local, "AUTO_PASTE_MAX_SEC", AUTO_PASTE_MAX_SEC)
+    PASTE_ONLY_IF_SAME_APP = getattr(_local, "PASTE_ONLY_IF_SAME_APP", PASTE_ONLY_IF_SAME_APP)
     _extra_prompt = getattr(_local, "EXTRA_PROMPT", "")
     if _extra_prompt:
         INITIAL_PROMPT = f"{INITIAL_PROMPT} {_extra_prompt}"
 except ImportError:
     pass
+
+
+def _front_running_app():
+    """NSRunningApplication that owns the keyboard focus right now, or None.
+
+    Deliberately NOT NSWorkspace.frontmostApplication(): AppKit refreshes that
+    value from activation notifications on the MAIN run loop, and this daemon's
+    main thread sits in listener.join() and never pumps one — so the answer
+    freezes at whatever was frontmost when the process started (observed: a
+    daemon launched at login attributed a week of dictations to a login item
+    that had started in the same second). The Accessibility "focused
+    application" attribute is answered by the window server on every call,
+    from any thread, without a run loop (~1 ms); GetFrontProcess is the
+    fallback if the AX call fails. Needs the Accessibility permission the
+    hotkey listener already requires."""
+    pid = None
+    try:
+        from ApplicationServices import (AXUIElementCreateSystemWide,
+                                         AXUIElementCopyAttributeValue,
+                                         AXUIElementGetPid,
+                                         kAXFocusedApplicationAttribute)
+        err, el = AXUIElementCopyAttributeValue(
+            AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute, None)
+        if not err and el is not None:
+            err, p = AXUIElementGetPid(el, None)
+            if not err:
+                pid = int(p)
+    except Exception:
+        pid = None
+    if pid is None:
+        try:
+            lib = ctypes.CDLL(ctypes.util.find_library("ApplicationServices"))
+
+            class _PSN(ctypes.Structure):
+                _fields_ = [("hi", ctypes.c_uint32), ("lo", ctypes.c_uint32)]
+            psn, p = _PSN(), ctypes.c_int32()
+            if (lib.GetFrontProcess(ctypes.byref(psn)) == 0
+                    and lib.GetProcessPID(ctypes.byref(psn), ctypes.byref(p)) == 0):
+                pid = int(p.value)
+        except Exception:
+            pid = None
+    if pid is None:
+        return None
+    from AppKit import NSRunningApplication
+    return NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+
+
+def _front_app():
+    """(pid, name) of the application that owns the keyboard focus right now,
+    or None if it cannot be determined. One window-server lookup, about a
+    millisecond — still not called from the hotkey callback itself (see
+    _start_recording_locked)."""
+    try:
+        app = _front_running_app()
+        if app is None:
+            return None
+        name = app.localizedName() or app.bundleIdentifier() or "?"
+        return (int(app.processIdentifier()), str(name))
+    except Exception:
+        return None
 
 
 def _notify(title, message):
@@ -288,6 +359,7 @@ class Daemon:
         self._gen = 0             # id of the current stream; older ones are ignored
         self._abandoned = False   # a stream close hung inside PortAudio
         self._closing = 0         # stream shutdowns still running
+        self._front_app_at_press = None   # (pid, name) — see _note_front_app
 
     @property
     def state(self):
@@ -504,11 +576,37 @@ class Daemon:
             print("⚠️  Recording did not start (PortAudio error)", flush=True)
             return False
         self._rec_started = time.monotonic()
+        # Remember the application the user is dictating INTO. Looked up on a
+        # helper thread: this runs in the hotkey callback, and an Accessibility
+        # query must not be able to hold it up.
+        self._front_app_at_press = None
+        if PASTE_ONLY_IF_SAME_APP:
+            threading.Thread(target=self._note_front_app,
+                             args=(self._rec_started,), daemon=True).start()
         self._state = "recording"
         self._last_activity = time.monotonic()
         print("🎙  Recording...", flush=True)
         self._pause_media()
         return True
+
+    def _note_front_app(self, started_at):
+        """Helper-thread half of _start_recording_locked. The token keeps a
+        slow lookup from a previous press from overwriting the current one."""
+        app = _front_app()
+        if self._rec_started == started_at:
+            self._front_app_at_press = app
+
+    def _focus_moved(self):
+        """Has the keyboard focus left the application the dictation started
+        in? Returns (name_before, name_now) if so, else None. Unknown on either
+        side (AppKit missing, lookup not finished) counts as NOT moved, so the
+        guard only withholds a paste it is sure about."""
+        if not PASTE_ONLY_IF_SAME_APP:
+            return None
+        before, now = self._front_app_at_press, _front_app()
+        if before is None or now is None or before[0] == now[0]:
+            return None
+        return (before[1], now[1])
 
     def stop_recording(self):
         if self._state != "recording":
@@ -586,17 +684,26 @@ class Daemon:
             self._log_stats(text, audio_sec, transcribe_sec, result.get("language"))
             # Trailing space so consecutive dictations don't run together.
             payload = text + " "
+            # Two reasons NOT to auto-paste: a long recording (focus has likely
+            # drifted from where dictation started) or a focus change we
+            # actually observed. Either way a blind Cmd+V would misfire, so the
+            # transcript is left on the clipboard (the previous clip is NOT
+            # restored — that would wipe it) and the user pastes deliberately.
+            park = None
             if AUTO_PASTE_MAX_SEC and audio_sec > AUTO_PASTE_MAX_SEC:
-                # Long recording: focus has likely drifted from where dictation
-                # started, so a blind Cmd+V would misfire. Leave the transcript
-                # on the clipboard (do NOT restore the previous clip — that would
-                # wipe it) and notify, so the user pastes it deliberately.
-                pyperclip.copy(payload)
                 mins = audio_sec / 60
-                print(f"📋 Long recording ({mins:.1f} min) — transcript left on "
-                      f"clipboard, press Cmd+V to paste\n", flush=True)
-                _notify("Whisper Dictation",
-                        f"Long transcript ready ({mins:.1f} min) — press Cmd+V to paste")
+                park = (f"Long recording ({mins:.1f} min)",
+                        f"Long transcript ready ({mins:.1f} min)")
+            else:
+                moved = self._focus_moved()
+                if moved:
+                    park = (f"Focus moved from {moved[0]} to {moved[1]}",
+                            f"Focus moved to {moved[1]} — transcript ready")
+            if park:
+                pyperclip.copy(payload)
+                print(f"📋 {park[0]} — transcript left on clipboard, "
+                      f"press Cmd+V to paste\n", flush=True)
+                _notify("Whisper Dictation", f"{park[1]} — press Cmd+V to paste")
             else:
                 # Paste at the cursor via the clipboard, then hand the clipboard
                 # back to whatever the user had before, so dictation never leaves
@@ -834,6 +941,7 @@ prewarm_model()
 print(f"  Idle restart: {'disabled' if IDLE_RESTART_SEC <= 0 else str(IDLE_RESTART_SEC) + 's'}")
 print(f"  Keep-warm   : {'off' if KEEP_WARM_SEC <= 0 else str(KEEP_WARM_SEC) + 's (preroll ' + str(PREROLL_SEC) + 's)'}")
 print(f"  Auto-paste  : {'always' if AUTO_PASTE_MAX_SEC <= 0 else 'up to ' + str(AUTO_PASTE_MAX_SEC) + 's, longer → clipboard + notify'}")
+print(f"  Same-app    : {'paste only into the app where dictation started, else clipboard + notify' if PASTE_ONLY_IF_SAME_APP else 'off (always paste)'}")
 print("=" * 45)
 print("  Ctrl+C to quit")
 print()

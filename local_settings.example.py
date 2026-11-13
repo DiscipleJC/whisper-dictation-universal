@@ -57,3 +57,12 @@ AUTO_PASTE_MAX_SEC = 300
 # Two windows of the same application are not told apart. Set False to always
 # paste into whatever is frontmost.
 PASTE_ONLY_IF_SAME_APP = True
+
+# How the transcript is inserted. Chromium-based apps (Chrome, Brave, Edge and
+# Electron apps such as Slack) can drop a Cmd+V that follows a clipboard
+# restore, so by default the text is TYPED into them as keystrokes and the
+# clipboard is not touched; every other app still gets Cmd+V.
+#   "chromium" — type into Chromium/Electron apps, paste elsewhere (default)
+#   "always"   — type everywhere
+#   "never"    — always paste via Cmd+V
+TYPE_INSTEAD_OF_PASTE = "chromium"

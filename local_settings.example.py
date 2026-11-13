@@ -66,3 +66,19 @@ PASTE_ONLY_IF_SAME_APP = True
 #   "always"   — type everywhere
 #   "never"    — always paste via Cmd+V
 TYPE_INSTEAD_OF_PASTE = "chromium"
+
+# Hands-free recording — for a meeting or a long note, where holding the right
+# Option for minutes is impractical (every other key becomes Option+key).
+# TOGGLE_HOTKEY is a chord: tap to start, tap again to stop. Spelled as
+# modifiers + one key: "ctrl", "alt" (= LEFT Option; the right one stays the
+# push-to-talk key), "cmd", "shift", then a letter or digit. Matched by key
+# position, so any keyboard layout works. Set "" to disable the chord.
+TOGGLE_HOTKEY = "ctrl+alt+r"
+
+# The same hands-free recording by tapping the right Option twice; one more tap
+# stops it. A tap is a press released within DOUBLE_TAP_MAX_HOLD_SEC, the
+# second tap must come within DOUBLE_TAP_SEC of that release. A quick single
+# tap therefore ends DOUBLE_TAP_SEC later than before; normal hold-and-speak
+# dictation is not delayed. Set DOUBLE_TAP_SEC = 0 to disable the double tap.
+DOUBLE_TAP_SEC = 0.45
+DOUBLE_TAP_MAX_HOLD_SEC = 0.3

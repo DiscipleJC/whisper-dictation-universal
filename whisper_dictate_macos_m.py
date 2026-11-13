@@ -36,6 +36,28 @@ from pynput import keyboard
 from pynput.keyboard import Controller, Key, KeyCode
 
 HOTKEY = Key.alt_r
+# Hands-free recording, for anything too long to hold a key through (a meeting,
+# a long note). Holding the RIGHT Option for minutes turns every other key into
+# Option+key and Cmd+Tab into "hide the app you are leaving". Two ways to start
+# a recording that no key has to hold; both stop the same way:
+#
+#   TOGGLE_HOTKEY — a chord: tap it to start, tap it again to stop. Spelled as
+#   modifiers + one key: "ctrl", "alt" (= LEFT Option; the right one stays
+#   push-to-talk), "cmd", "shift", then a letter or digit. The key is matched
+#   by its hardware position, so it works in any keyboard layout. "" disables.
+#
+#   Double tap — two quick taps of the push-to-talk key itself. A tap is a
+#   press released within DOUBLE_TAP_MAX_HOLD_SEC; the second one has to come
+#   within DOUBLE_TAP_SEC of that release. The price: a quick single tap ends
+#   DOUBLE_TAP_SEC later than before (the recording keeps running while we
+#   wait for a possible second tap, so nothing is cut off if it comes). A
+#   normal hold-and-speak dictation is not delayed. DOUBLE_TAP_SEC = 0 disables.
+#
+# One tap of the push-to-talk key (or the chord, or IPC /toggle) stops a
+# hands-free recording. All three are overridable in local_settings.py.
+TOGGLE_HOTKEY = "ctrl+alt+r"
+DOUBLE_TAP_SEC = 0.45
+DOUBLE_TAP_MAX_HOLD_SEC = 0.3
 LANGUAGE = None
 # NOTE: not the 4-bit build — mlx-community's 4bit/8bit turbo repos ship
 # model.safetensors, which mlx-whisper <= 0.4.3 cannot load (it expects
@@ -143,6 +165,9 @@ try:
     AUTO_PASTE_MAX_SEC = getattr(_local, "AUTO_PASTE_MAX_SEC", AUTO_PASTE_MAX_SEC)
     PASTE_ONLY_IF_SAME_APP = getattr(_local, "PASTE_ONLY_IF_SAME_APP", PASTE_ONLY_IF_SAME_APP)
     TYPE_INSTEAD_OF_PASTE = getattr(_local, "TYPE_INSTEAD_OF_PASTE", TYPE_INSTEAD_OF_PASTE)
+    TOGGLE_HOTKEY = getattr(_local, "TOGGLE_HOTKEY", TOGGLE_HOTKEY)
+    DOUBLE_TAP_SEC = getattr(_local, "DOUBLE_TAP_SEC", DOUBLE_TAP_SEC)
+    DOUBLE_TAP_MAX_HOLD_SEC = getattr(_local, "DOUBLE_TAP_MAX_HOLD_SEC", DOUBLE_TAP_MAX_HOLD_SEC)
     _extra_prompt = getattr(_local, "EXTRA_PROMPT", "")
     if _extra_prompt:
         INITIAL_PROMPT = f"{INITIAL_PROMPT} {_extra_prompt}"
@@ -341,6 +366,95 @@ def _should_type(engine):
     return False
 
 
+# ── Hands-free chord (TOGGLE_HOTKEY) ─────────────────────────────────────────
+# The chord is recognised from the modifier state the OS reports at the moment
+# the key arrives (CGEventSourceFlagsState / CGEventSourceKeyState — instant,
+# non-blocking calls), not from our own bookkeeping of modifier presses: a lost
+# modifier release can then never leave a "stuck" chord. pynput's
+# darwin_intercept is NOT used on purpose — it runs AFTER on_press (so it would
+# report the previous event's flags) and turns the tap from listen-only into an
+# active one.
+_FLAG_OF = {"ctrl": 0x40000, "alt": 0x80000, "cmd": 0x100000, "shift": 0x20000}
+_FLAG_ALL = sum(_FLAG_OF.values())
+_FLAG_LEFT_ALT, _FLAG_RIGHT_ALT = 0x20, 0x40   # NX_DEVICEL/RALTKEYMASK
+_MODIFIER_ALIASES = {"control": "ctrl", "option": "alt", "opt": "alt",
+                     "command": "cmd", "meta": "cmd"}
+# macOS virtual key codes (hardware positions) for letters and digits. With
+# Control held, pynput reports the key with no readable character, and the
+# character also changes with the layout — the position does not.
+_VK = {
+    "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8,
+    "v": 9, "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17,
+    "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "9": 25, "7": 26,
+    "8": 28, "0": 29, "o": 31, "u": 32, "i": 34, "p": 35, "l": 37, "j": 38,
+    "k": 40, "n": 45, "m": 46,
+}
+_LABELS = {"ctrl": "Ctrl", "alt": "Option", "cmd": "Cmd", "shift": "Shift"}
+_VK_LEFT_ALT, _VK_RIGHT_ALT = 58, 61
+
+
+def _parse_toggle_hotkey(spec):
+    """"ctrl+alt+r" → (required flag mask, vk, label) or None when disabled or
+    invalid. label = "Ctrl+Option+R" for messages."""
+    spec = (spec or "").strip().lower()
+    if not spec:
+        return None
+    parts = [p.strip() for p in spec.split("+") if p.strip()]
+    if len(parts) < 2:
+        return None
+    *mods, key = parts
+    mask, names = 0, []
+    for m in mods:
+        m = _MODIFIER_ALIASES.get(m, m)
+        if m not in _FLAG_OF or m in names:
+            return None
+        mask |= _FLAG_OF[m]
+        names.append(m)
+    if key not in _VK:
+        return None
+    label = "+".join(_LABELS[n] for n in names) + "+" + key.upper()
+    return (mask, _VK[key], label)
+
+
+def _is_toggle_chord(key, flags, chord):
+    """True when the pressed `key` with modifier `flags` completes the chord:
+    exactly the required modifiers are down (no extra Cmd/Shift/…). "alt"
+    means the LEFT Option: when the device bits say only the RIGHT one is down,
+    that press belongs to push-to-talk, not to the chord."""
+    if chord is None:
+        return False
+    mask, vk, _ = chord
+    if getattr(key, "vk", None) != vk:
+        return False
+    if (flags & _FLAG_ALL) != mask:
+        return False
+    if mask & _FLAG_OF["alt"] and (flags & (_FLAG_LEFT_ALT | _FLAG_RIGHT_ALT)) == _FLAG_RIGHT_ALT:
+        return False
+    return True
+
+
+def _current_flags():
+    """Modifier flags the OS holds down right now (session state = hardware
+    plus posted events), with the left/right Option device bits filled in from
+    the per-key state. 0 when Quartz is unavailable, so the chord never fires
+    by accident. Called inside the event-tap callback: must stay instant."""
+    try:
+        from Quartz import (CGEventSourceFlagsState, CGEventSourceKeyState,
+                            kCGEventSourceStateCombinedSessionState as _S)
+        flags = int(CGEventSourceFlagsState(_S)) & _FLAG_ALL
+        if CGEventSourceKeyState(_S, _VK_LEFT_ALT):
+            flags |= _FLAG_LEFT_ALT
+        if CGEventSourceKeyState(_S, _VK_RIGHT_ALT):
+            flags |= _FLAG_RIGHT_ALT
+        return flags
+    except Exception:
+        return 0
+
+
+_TOGGLE_CHORD = _parse_toggle_hotkey(TOGGLE_HOTKEY)
+TOGGLE_HOTKEY_LABEL = _TOGGLE_CHORD[2] if _TOGGLE_CHORD else ""
+
+
 def _notify(title, message):
     """Best-effort macOS notification via osascript. Never raises."""
     try:
@@ -509,6 +623,15 @@ class Daemon:
         self._abandoned = False   # a stream close hung inside PortAudio
         self._closing = 0         # stream shutdowns still running
         self._front_app_at_press = None   # (pid, name) — see _note_front_app
+        # True while a recording started by the chord, a double tap or IPC
+        # /toggle is running: releasing the push-to-talk key must not end it.
+        self._hands_free = False
+        # Double tap: token (= _rec_started) of a recording whose quick first
+        # tap was released and which is waiting DOUBLE_TAP_SEC for a second
+        # one. The lock is only held for a few assignments, never across audio
+        # or a notification.
+        self._tap_pending = None
+        self._tap_lock = threading.Lock()
 
     @property
     def state(self):
@@ -517,6 +640,10 @@ class Daemon:
     @property
     def privacy_mode(self):
         return self._privacy_mode
+
+    @property
+    def hands_free(self):
+        return self._hands_free
 
     def _audio_callback(self, gen, indata, frames, t, status):
         block = indata.copy()
@@ -756,6 +883,7 @@ class Daemon:
         if PASTE_ONLY_IF_SAME_APP:
             threading.Thread(target=self._note_front_app,
                              args=(self._rec_started,), daemon=True).start()
+        self._tap_pending = None
         self._state = "recording"
         self._last_activity = time.monotonic()
         print("🎙  Recording...", flush=True)
@@ -785,16 +913,86 @@ class Daemon:
         if self._state != "recording":
             return False
         self._rec_held = time.monotonic() - self._rec_started
+        self._hands_free = False
+        self._tap_pending = None
         self._state = "transcribing"
         threading.Thread(target=self._do_transcribe, daemon=True).start()
         return True
 
     def toggle(self):
+        """Hands-free toggle (chord or IPC /toggle): start a recording that no
+        key has to hold, or stop the one running. Notifications go to a thread:
+        osascript can take a moment and this runs in the hotkey callback."""
         if self._state == "idle":
-            return self.start_recording()
+            if not self.start_recording():
+                return False
+            self._hands_free = True
+            hint = TOGGLE_HOTKEY_LABEL or "toggle"
+            print(f"🎙  Hands-free recording — {hint} again to stop", flush=True)
+            self._notify_async("Whisper Dictation",
+                               f"Recording… press {hint} again to stop")
+            return True
         if self._state == "recording":
-            return self.stop_recording()
+            was_hands_free = self._hands_free
+            if not self.stop_recording():
+                return False
+            if was_hands_free:
+                self._notify_async("Whisper Dictation",
+                                   "Recording stopped — transcribing")
+            return True
         return False  # transcribing — ignore
+
+    def hotkey_down(self):
+        """The push-to-talk key went down. Three meanings, by state: it ends a
+        hands-free recording, it is the second tap of a double tap (the
+        recording the first tap started simply carries on, hands-free), or it
+        starts an ordinary push-to-talk recording."""
+        with self._tap_lock:
+            if self._state == "recording" and self._hands_free:
+                if not self.stop_recording():
+                    return False
+                self._notify_async("Whisper Dictation",
+                                   "Recording stopped — transcribing")
+                return True
+            if self._state == "recording" and self._tap_pending is not None:
+                self._tap_pending = None
+                self._hands_free = True
+                print("🎙  Hands-free recording (double tap) — tap the hotkey "
+                      "once to stop", flush=True)
+                self._notify_async("Whisper Dictation",
+                                   "Recording… tap right Option once to stop")
+                return True
+        return self.start_recording()
+
+    def hotkey_up(self):
+        """The push-to-talk key was released. A hands-free recording ignores
+        it. A quick tap does not stop yet — it waits DOUBLE_TAP_SEC for a
+        second tap, on a timer thread; anything held longer stops at once."""
+        with self._tap_lock:
+            if self._hands_free or self._state != "recording":
+                return False
+            held = time.monotonic() - self._rec_started
+            if DOUBLE_TAP_SEC > 0 and held < DOUBLE_TAP_MAX_HOLD_SEC:
+                token = self._rec_started
+                self._tap_pending = token
+                t = threading.Timer(DOUBLE_TAP_SEC, self._tap_expired, args=(token,))
+                t.daemon = True
+                t.start()
+                return True
+            return self.stop_recording()
+
+    def _tap_expired(self, token):
+        """Timer thread: no second tap came, so the quick tap ends the way a
+        released push-to-talk does. The token keeps a stale timer from
+        stopping a newer recording."""
+        with self._tap_lock:
+            if (self._tap_pending is not None and self._tap_pending == token
+                    and self._state == "recording" and not self._hands_free):
+                self.stop_recording()
+
+    @staticmethod
+    def _notify_async(title, message):
+        threading.Thread(target=_notify, args=(title, message), daemon=True).start()
 
     def _do_transcribe(self):
         try:
@@ -1144,18 +1342,25 @@ def start_ipc_server():
 
 def on_press(key):
     if key == HOTKEY:
-        daemon.start_recording()
+        daemon.hotkey_down()
+    elif _TOGGLE_CHORD is not None and getattr(key, "vk", None) == _TOGGLE_CHORD[1] \
+            and _is_toggle_chord(key, _current_flags(), _TOGGLE_CHORD):
+        daemon.toggle()
 
 
 def on_release(key):
+    # What a release means (stop, wait for a second tap, or nothing during a
+    # hands-free recording) is decided in Daemon.hotkey_up().
     if key == HOTKEY:
-        daemon.stop_recording()
+        daemon.hotkey_up()
 
 
 print("=" * 45)
 print("  Whisper Dictation  |  mlx-whisper M-series")
 print("=" * 45)
 print(f"  Hotkey : RIGHT OPTION (push-to-talk)")
+print(f"  Hands-free: {TOGGLE_HOTKEY_LABEL + ' — tap to start, tap again to stop' if _TOGGLE_CHORD else 'chord off (TOGGLE_HOTKEY empty or invalid: ' + repr(TOGGLE_HOTKEY) + ')'}")
+print(f"  Double tap: {'RIGHT OPTION twice — hands-free recording, one more tap stops it' if DOUBLE_TAP_SEC > 0 else 'off (DOUBLE_TAP_SEC = 0)'}")
 print(f"  Language: {LANGUAGE or 'auto-detect'}")
 print(f"  Model   : {MODEL.split('/')[-1]}")
 start_ipc_server()

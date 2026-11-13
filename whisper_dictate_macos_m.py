@@ -620,7 +620,8 @@ class Daemon:
         self._last_cb = 0.0       # monotonic time of the last audio callback
         self._rec_samples = 0     # live samples captured by this recording
         self._rec_started = 0.0
-        self._rec_held = 0.0      # how long the hotkey was held
+        self._mic_ready_at = None # when the mic was open for this recording
+        self._rec_held = 0.0      # how long the mic was open while the hotkey was held
         self._dead_streak = 0     # recordings in a row with no live audio
         self._gen = 0             # id of the current stream; older ones are ignored
         # One thread owns the microphone. Everything that calls into PortAudio
@@ -847,6 +848,10 @@ class Daemon:
                 self._tap_pending = None
                 self._state = "idle"
                 return
+        # The dead-microphone test counts from here, not from the key press:
+        # the press no longer waits for the open, so a slow open (a Bluetooth
+        # mic can take a second) must not look like a mic that delivers nothing.
+        self._mic_ready_at = time.monotonic()
         self._pause_media()
 
     def _job_finish_capture(self):
@@ -899,6 +904,7 @@ class Daemon:
             self._frames = [] if self._stream_is_stale() else self._preroll_blocks()
             self._rec_samples = 0
         self._rec_started = time.monotonic()
+        self._mic_ready_at = None
         # Remember the application the user is dictating INTO. Looked up on a
         # helper thread: this runs in the hotkey callback, and an Accessibility
         # query must not be able to hold it up.
@@ -935,7 +941,8 @@ class Daemon:
     def stop_recording(self):
         if self._state != "recording":
             return False
-        self._rec_held = time.monotonic() - self._rec_started
+        ready = self._mic_ready_at
+        self._rec_held = time.monotonic() - ready if ready is not None else 0.0
         self._hands_free = False
         self._tap_pending = None
         self._state = "transcribing"

@@ -464,6 +464,23 @@ class Daemon:
         except Exception as e:
             print(f"⚠️  audio reset failed: {e}", flush=True)
 
+    def _reinit_after_open_failure(self):
+        """Rebuild PortAudio after an open was refused. There is no stream to
+        tear down at this point. Returns False if it is not safe to do (a
+        stream close is hung or still running — Pa_Terminate would race or
+        hang on it) or if the rebuild itself failed."""
+        if self._abandoned or self._closing:
+            return False
+        try:
+            sd._terminate()
+            sd._initialize()
+            print("🔁 Audio reinitialised after a failed open — retrying",
+                  flush=True)
+            return True
+        except Exception as e:
+            print(f"⚠️  audio reset failed: {e}", flush=True)
+            return False
+
     def _pause_media(self):
         """Pause whatever is playing — but only if audio is actually playing,
         so the hotkey never accidentally starts a paused track."""
@@ -501,8 +518,15 @@ class Daemon:
             self._frames = [] if self._stream_is_stale() else self._preroll_blocks()
             self._rec_samples = 0
         if not self._open_stream_for_recording():
-            print("⚠️  Recording did not start (PortAudio error)", flush=True)
-            return False
+            # A refused open usually means PortAudio still holds the devices of
+            # a coreaudiod that has been restarted since (an audio driver
+            # install or update does that): every press then fails with
+            # PaErrorCode -9986 until the daemon is restarted by hand.
+            # Rebuild PortAudio and try once more.
+            if not (self._reinit_after_open_failure()
+                    and self._open_stream_for_recording()):
+                print("⚠️  Recording did not start (PortAudio error)", flush=True)
+                return False
         self._rec_started = time.monotonic()
         self._state = "recording"
         self._last_activity = time.monotonic()

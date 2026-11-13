@@ -343,6 +343,8 @@ The mlx dictation script imports it on startup and applies any of these override
 | `AUTO_PAUSE_MEDIA` | `False` | Pause/resume whatever is playing (browser, Music, Spotify) while you dictate. Off by default because on macOS 15.4+/26 the "is playing" gate is unreliable and a stray media key can launch Music.app; set `True` to opt in |
 | `SPOKEN_PUNCTUATION` | `False` | Turn spoken commands ("new line", "comma", …) into real punctuation |
 | `KEEP_WARM_SEC` | `8` | Keep the mic warm N seconds after a dictation so the next one isn't clipped; `0` = close immediately (max privacy) |
+| `TOGGLE_HOTKEY` | `"ctrl+alt+r"` | Chord that starts/stops a hands-free recording (left Option); `""` = off |
+| `DOUBLE_TAP_SEC` | `0.45` | Two taps of the right Option within this window start a hands-free recording; `0` = off |
 
 ### Dictation features (macOS / mlx backend)
 
@@ -357,6 +359,11 @@ The mlx dictation script imports it on startup and applies any of these override
 - **Spoken punctuation** — optionally convert phrases like "new line" / "comma" (and
   their Russian equivalents) into real marks. Off by default because some commands
   are also ordinary words. Enable with `SPOKEN_PUNCTUATION`.
+- **Hands-free recording** — for a meeting or a long note you don't have to hold
+  the key: tap the right Option twice (or press Ctrl+Option+R with the *left*
+  Option) to start, tap the right Option once to stop. A notification confirms
+  both. Recordings longer than `AUTO_PASTE_MAX_SEC` are left on the clipboard
+  instead of being pasted. Tune with `TOGGLE_HOTKEY` / `DOUBLE_TAP_SEC`.
 - **Sleep recovery** — after the Mac sleeps the first dictation may come back empty;
   the daemon then reinitialises Core Audio in-process and the next one works, without
   needing a restart.

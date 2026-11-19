@@ -29,6 +29,7 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
+import mlx.core as mx
 import mlx_whisper
 import numpy as np
 import pyperclip
@@ -1065,6 +1066,7 @@ class Daemon:
                 initial_prompt=INITIAL_PROMPT,
             )
             transcribe_sec = time.monotonic() - t0
+            release_mlx_cache()
             # Drop hallucinated segments before pasting. Thresholds are the
             # official openai/whisper values: no_speech_prob > 0.6 with
             # avg_logprob < -1.0 = speech invented over breath/noise ("Thanks
@@ -1216,6 +1218,21 @@ class Daemon:
 daemon = Daemon()
 
 
+def release_mlx_cache():
+    """Give back MLX's buffer cache after a transcription.
+
+    MLX keeps the GPU buffers a computation freed, to reuse them later, and by
+    default never gives them back (the cache limit equals the memory limit).
+    Each longer dictation grew that cache: after ~6 days the daemon held 3.2 GB
+    while the 4-bit model needs ~0.45 GB. Clearing after each transcription
+    costs nothing measurable (0.31 s per transcription with and without it,
+    19.11.2026); the model weights stay loaded."""
+    try:
+        mx.clear_cache()
+    except Exception as e:  # an MLX without clear_cache must not break dictation
+        print(f"⚠️  MLX cache not cleared: {e}", flush=True)
+
+
 def prewarm_model():
     """Load the model weights into memory in the background at startup.
 
@@ -1235,6 +1252,7 @@ def prewarm_model():
                 no_speech_threshold=0.6,
                 condition_on_previous_text=False,
             )
+            release_mlx_cache()
             print(f"  Prewarm: model in memory in {time.monotonic() - t0:.1f}s",
                   flush=True)
         except Exception as e:

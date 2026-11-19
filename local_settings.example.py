@@ -82,3 +82,29 @@ TOGGLE_HOTKEY = "ctrl+alt+r"
 # dictation is not delayed. Set DOUBLE_TAP_SEC = 0 to disable the double tap.
 DOUBLE_TAP_SEC = 0.45
 DOUBLE_TAP_MAX_HOLD_SEC = 0.3
+
+# Meeting transcript by speaker (2026-11-18). After a HANDS-FREE recording of
+# DIARIZE_MIN_SEC or longer the transcript is also split by voice —
+# "[mm:ss] Speaker 2: ..." — by whisper_diarize.py in a separate process. The
+# plain transcript is on the clipboard at once; the by-speaker text follows as
+# a file in MEETINGS_DIR and on the clipboard, with a notification. Needs an
+# interpreter with sherpa-onnx (pip install sherpa-onnx numpy) and two ONNX
+# models from https://github.com/k2-fsa/sherpa-onnx/releases — a speaker
+# segmentation model and a speaker embedding model. Everything runs locally.
+# DIARIZE_ASK_SPEAKERS = True asks how many people spoke (more reliable when
+# you know); otherwise DIARIZE_AUTO_THRESHOLD decides (lower = more voices).
+# DIARIZE_HANDS_FREE = True
+# DIARIZE_PYTHON = "~/diarization/venv/bin/python"
+# DIARIZE_SEGMENTATION_MODEL = "~/diarization/models/segmentation.onnx"
+# DIARIZE_EMBEDDING_MODEL = "~/diarization/models/embedding.onnx"
+# DIARIZE_MIN_SEC = 60
+# DIARIZE_THREADS = 6
+# DIARIZE_ASK_SPEAKERS = False
+# DIARIZE_AUTO_THRESHOLD = 0.5
+# DIARIZE_LABEL = "Speaker"
+# MEETINGS_DIR = "~/Documents/whisper-meetings"
+
+# Meeting mode: a hands-free recording (double tap / chord / /toggle) is a
+# meeting whatever its length — plain transcript to the clipboard and to a file
+# in MEETINGS_DIR, by-speaker text to a file only, nothing pasted into a window.
+# MEETING_MODE = True

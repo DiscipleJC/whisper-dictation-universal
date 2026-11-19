@@ -154,6 +154,44 @@ PASTE_ONLY_IF_SAME_APP = True
 # Overridable in local_settings.py.
 TYPE_INSTEAD_OF_PASTE = "chromium"
 
+# Meeting transcript by speaker (2026-11-18). After a HANDS-FREE recording
+# (double tap, chord or /toggle) of at least DIARIZE_MIN_SEC, the transcript is
+# also split by voice: "[mm:ss] Speaker 2: ...". The plain transcript goes to
+# the clipboard at once, as before; the by-speaker text follows a minute or two
+# later (measured 18.11.2026: 68 s per 10 min of meeting) as a file in
+# MEETINGS_DIR and on the clipboard, with a notification. Push-to-talk
+# dictation is never affected. The work is done by whisper_diarize.py in a
+# SEPARATE process (DIARIZE_PYTHON = an interpreter that has sherpa-onnx), so
+# its 300-600 MB exist only while it runs and nothing it does can stall the
+# hotkey. Local only: two ONNX models read from disk. How many people spoke is
+# decided by the clustering threshold (DIARIZE_AUTO_THRESHOLD); with
+# DIARIZE_ASK_SPEAKERS = True a dialog asks for the number instead, which is
+# more reliable when you know it. The recording itself is
+# written to a temporary WAV for that process and deleted afterwards.
+# Off unless local_settings.py turns it on and names the interpreter and models.
+DIARIZE_HANDS_FREE = False
+DIARIZE_MIN_SEC = 60
+DIARIZE_PYTHON = ""
+DIARIZE_SEGMENTATION_MODEL = ""
+DIARIZE_EMBEDDING_MODEL = ""
+DIARIZE_THREADS = 6
+DIARIZE_ASK_SPEAKERS = False
+DIARIZE_AUTO_THRESHOLD = 0.5
+DIARIZE_LABEL = "Speaker"
+MEETINGS_DIR = Path.home() / "Documents" / "whisper-meetings"
+
+# Meeting mode (2026-11-19): what happens to the text is decided by HOW the
+# recording was made, not by how long it ran. Holding the key = dictation, the
+# text goes into the window. A hands-free recording (double tap, chord,
+# /toggle) = a meeting, whatever its length: the plain transcript goes to the
+# clipboard and to meeting_<stamp>_plain.txt in MEETINGS_DIR, nothing is pasted
+# or typed, and the by-speaker text (when DIARIZE_HANDS_FREE is on and the
+# recording is long enough to split) lands in meeting_<stamp>.txt WITHOUT
+# replacing the clipboard. False = the behaviour before: hands-free recordings
+# are pasted like dictation unless AUTO_PASTE_MAX_SEC or the by-speaker step
+# says otherwise, and the by-speaker text overwrites the clipboard.
+MEETING_MODE = False
+
 INITIAL_PROMPT = (
     "Claude Code, OpenAI, Python, JavaScript, TypeScript, GitHub, Docker, "
     "Kubernetes, API, REST, JSON, SQL, React, Node.js, Linux, macOS, Windows, "
@@ -175,6 +213,17 @@ try:
     TOGGLE_HOTKEY = getattr(_local, "TOGGLE_HOTKEY", TOGGLE_HOTKEY)
     DOUBLE_TAP_SEC = getattr(_local, "DOUBLE_TAP_SEC", DOUBLE_TAP_SEC)
     DOUBLE_TAP_MAX_HOLD_SEC = getattr(_local, "DOUBLE_TAP_MAX_HOLD_SEC", DOUBLE_TAP_MAX_HOLD_SEC)
+    DIARIZE_HANDS_FREE = getattr(_local, "DIARIZE_HANDS_FREE", DIARIZE_HANDS_FREE)
+    DIARIZE_MIN_SEC = getattr(_local, "DIARIZE_MIN_SEC", DIARIZE_MIN_SEC)
+    DIARIZE_PYTHON = getattr(_local, "DIARIZE_PYTHON", DIARIZE_PYTHON)
+    DIARIZE_SEGMENTATION_MODEL = getattr(_local, "DIARIZE_SEGMENTATION_MODEL", DIARIZE_SEGMENTATION_MODEL)
+    DIARIZE_EMBEDDING_MODEL = getattr(_local, "DIARIZE_EMBEDDING_MODEL", DIARIZE_EMBEDDING_MODEL)
+    DIARIZE_THREADS = getattr(_local, "DIARIZE_THREADS", DIARIZE_THREADS)
+    DIARIZE_ASK_SPEAKERS = getattr(_local, "DIARIZE_ASK_SPEAKERS", DIARIZE_ASK_SPEAKERS)
+    DIARIZE_AUTO_THRESHOLD = getattr(_local, "DIARIZE_AUTO_THRESHOLD", DIARIZE_AUTO_THRESHOLD)
+    DIARIZE_LABEL = getattr(_local, "DIARIZE_LABEL", DIARIZE_LABEL)
+    MEETINGS_DIR = Path(getattr(_local, "MEETINGS_DIR", MEETINGS_DIR)).expanduser()
+    MEETING_MODE = getattr(_local, "MEETING_MODE", MEETING_MODE)
     _extra_prompt = getattr(_local, "EXTRA_PROMPT", "")
     if _extra_prompt:
         INITIAL_PROMPT = f"{INITIAL_PROMPT} {_extra_prompt}"
@@ -476,6 +525,68 @@ def _notify(title, message):
         pass
 
 
+DIARIZE_SCRIPT = Path(__file__).resolve().parent / "whisper_diarize.py"
+
+
+def _diarize_problem():
+    """None when the by-speaker step can run, else what is missing (for the
+    banner and the log). Checked at start-up and again before every run."""
+    if not DIARIZE_HANDS_FREE:
+        return "off (DIARIZE_HANDS_FREE = False)"
+    for name, value in (("DIARIZE_PYTHON", DIARIZE_PYTHON),
+                        ("DIARIZE_SEGMENTATION_MODEL", DIARIZE_SEGMENTATION_MODEL),
+                        ("DIARIZE_EMBEDDING_MODEL", DIARIZE_EMBEDDING_MODEL)):
+        if not value:
+            return f"{name} is not set"
+        if not Path(value).expanduser().is_file():
+            return f"{name} not found: {value}"
+    if not DIARIZE_SCRIPT.is_file():
+        return f"{DIARIZE_SCRIPT.name} is missing"
+    return None
+
+
+def _should_diarize(hands_free, audio_sec):
+    return bool(hands_free and audio_sec >= DIARIZE_MIN_SEC and _diarize_problem() is None)
+
+
+def _parse_speaker_count(reply):
+    """osascript's 'button returned:OK, text returned:5, gave up:false' → 5.
+    0 = let the model decide: empty or unreadable answer, the "Don't know"
+    button, a dialog nobody answered, a number outside 1-20."""
+    if not reply or "gave up:true" in reply or "button returned:OK" not in reply:
+        return 0
+    m = re.search(r"text returned:\s*(\d+)\s*(?:,|$)", reply)
+    n = int(m.group(1)) if m else 0
+    return n if 1 <= n <= 20 else 0
+
+
+def _ask_speaker_count(timeout=120):
+    """Ask how many people spoke. Blocks up to `timeout` s — call it from the
+    by-speaker thread only, never from the hotkey callback. Never raises."""
+    script = ('display dialog "How many people spoke in this recording?\\n'
+              'Leave empty if you are not sure." default answer "" '
+              'with title "Whisper Dictation" buttons {"Don\'t know", "OK"} '
+              f'default button "OK" giving up after {int(timeout)}')
+    try:
+        out = subprocess.run(["osascript", "-e", "activate", "-e", script],
+                             check=False, capture_output=True, text=True,
+                             timeout=timeout + 10)
+        return _parse_speaker_count(out.stdout.strip())
+    except Exception:
+        return 0
+
+
+def _write_wav(path, audio):
+    """float32 mono at RATE → 16-bit PCM WAV (what whisper_diarize.py reads)."""
+    import wave
+    pcm = (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(pcm.tobytes())
+
+
 # Media-key support via pyobjc. Sending the system Play/Pause key controls
 # whatever is currently playing (browser, Music, Spotify). Degrades silently
 # if pyobjc is unavailable.
@@ -625,6 +736,15 @@ class Daemon:
         self._rec_held = 0.0      # how long the mic was open while the hotkey was held
         self._dead_streak = 0     # recordings in a row with no live audio
         self._gen = 0             # id of the current stream; older ones are ignored
+        # Was the recording that just ended hands-free (a meeting)? Read by the
+        # transcription thread.
+        self._last_hands_free = False
+        # What a menu-bar indicator needs to know about the by-speaker step
+        # (served by /ui and /state, see ui_status). Written only by the
+        # "by-speaker" thread, one whole-dict assignment at a time.
+        self._meeting = {"splitting": False, "last_file": None,
+                         "last_voices": None, "last_failed": False, "seq": 0}
+        self._texts = 0           # recordings that ended in recognised text
         # One thread owns the microphone. Everything that calls into PortAudio
         # is a job on this queue, so two PortAudio calls can never overlap and
         # no other thread — above all the hotkey callback — ever waits for one.
@@ -658,6 +778,22 @@ class Daemon:
     @property
     def hands_free(self):
         return self._hands_free
+
+    def ui_status(self):
+        """Read-only facts for a menu-bar indicator: is the running recording
+        hands-free, how long it has been running, is a by-speaker split in
+        progress and where the last one landed. Plain reads, no locks, no
+        audio — safe from the IPC thread."""
+        started = self._rec_started
+        recording = self._state == "recording" and bool(started)
+        return {
+            "hands_free": bool(self._hands_free),
+            "recording_sec": round(time.monotonic() - started, 1) if recording else 0.0,
+            "texts": self._texts,
+            "meeting_mode": bool(MEETING_MODE),
+            "meeting": dict(self._meeting),
+            "meetings_dir": str(MEETINGS_DIR),
+        }
 
     def _audio_callback(self, gen, indata, frames, t, status):
         block = indata.copy()
@@ -944,6 +1080,9 @@ class Daemon:
             return False
         ready = self._mic_ready_at
         self._rec_held = time.monotonic() - ready if ready is not None else 0.0
+        # Remembered for the transcription thread: only a hands-free recording
+        # (a meeting) is also split by speaker.
+        self._last_hands_free = self._hands_free
         self._hands_free = False
         self._tap_pending = None
         self._state = "transcribing"
@@ -1056,6 +1195,7 @@ class Daemon:
                 return
             audio_sec = audio.shape[0] / RATE
             print("⏳ Transcribing...", flush=True)
+            by_speaker = _should_diarize(self._last_hands_free, audio_sec)
             t0 = time.monotonic()
             result = mlx_whisper.transcribe(
                 audio,
@@ -1064,6 +1204,7 @@ class Daemon:
                 no_speech_threshold=0.6,
                 condition_on_previous_text=False,
                 initial_prompt=INITIAL_PROMPT,
+                word_timestamps=by_speaker,   # word times are what a voice is matched to
             )
             transcribe_sec = time.monotonic() - t0
             release_mlx_cache()
@@ -1084,8 +1225,23 @@ class Daemon:
             text = _apply_spoken_punctuation(text)
             print(f"✅ {text}\n", flush=True)
             self._log_stats(text, audio_sec, transcribe_sec, result.get("language"))
+            self._texts += 1      # the menu-bar indicator tells "text ready" from "nothing recognised" by this
             # Trailing space so consecutive dictations don't run together.
             payload = text + " "
+            if by_speaker:
+                # A meeting: the plain transcript goes to the clipboard now, the
+                # by-speaker text follows from its own thread. Nothing is pasted
+                # — minutes pass, the focus is anywhere by then. The hotkey is
+                # free again as soon as this method returns.
+                words = [{"start": float(w["start"]), "end": float(w["end"]), "word": w["word"]}
+                         for s in segments for w in s.get("words", [])]
+                self._start_split_by_speaker(audio, words, payload)
+                return
+            if MEETING_MODE and self._last_hands_free:
+                # A meeting too short to split (or the by-speaker step is off):
+                # same outcome minus the by-speaker file.
+                self._keep_meeting_text(audio_sec, payload)
+                return
             # Two reasons NOT to auto-paste: a long recording (focus has likely
             # drifted from where dictation started) or a focus change we
             # actually observed. Either way a blind Cmd+V would misfire, so the
@@ -1145,6 +1301,111 @@ class Daemon:
             if self._privacy_mode and KEEP_WARM_SEC <= 0:
                 self._audio_submit("close-after-dictation", self._job_close_if_idle)
             self._resume_media()
+
+    def _start_split_by_speaker(self, audio, words, plain):
+        """Plain transcript to the clipboard, then hand the recording to the
+        "by-speaker" thread and return — the caller goes back to idle."""
+        pyperclip.copy(plain)
+        print(f"🗣  Meeting ({audio.shape[0] / RATE / 60:.1f} min) — plain transcript on the "
+              f"clipboard, splitting by speaker in the background\n", flush=True)
+        threading.Thread(target=self._split_by_speaker, name="by-speaker",
+                         args=(audio, words, plain, _pasteboard_change_count()),
+                         daemon=True).start()
+
+    def _keep_meeting_text(self, audio_sec, plain):
+        """MEETING_MODE, no by-speaker step: plain transcript to the clipboard
+        and to a file, nothing pasted. Never raises."""
+        pyperclip.copy(plain)
+        try:
+            MEETINGS_DIR.mkdir(parents=True, exist_ok=True)
+            out = MEETINGS_DIR / f"meeting_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}_plain.txt"
+            out.write_text(plain.strip() + "\n", encoding="utf-8")
+            kept = f"and in {out}"
+        except Exception as e:
+            kept = f"only (file not saved: {type(e).__name__}: {e})"
+        print(f"🗣  Meeting ({audio_sec / 60:.1f} min) — plain transcript on the clipboard {kept}\n",
+              flush=True)
+        _notify("Whisper Dictation", "Meeting text ready — press Cmd+V to paste")
+
+    def _split_by_speaker(self, audio, words, plain, plain_change):
+        """Thread "by-speaker": ask how many people spoke, run whisper_diarize.py
+        in its own process, save "[mm:ss] Speaker N: ..." to MEETINGS_DIR and
+        put it on the clipboard — unless the user has copied something else
+        since the plain transcript was put there. Any failure leaves the plain
+        transcript as the result and says so; nothing here raises or touches
+        audio, state or the hotkey."""
+        stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        out = MEETINGS_DIR / f"meeting_{stamp}.txt"
+        wav = MEETINGS_DIR / f".meeting_{stamp}.wav"
+        words_file = MEETINGS_DIR / f".meeting_{stamp}.words.json"
+        audio_sec = audio.shape[0] / RATE
+        seq = self._meeting["seq"] + 1
+        self._meeting = {**self._meeting, "splitting": True}
+        done = {"last_file": None, "last_voices": None, "last_failed": True}
+        try:
+            MEETINGS_DIR.mkdir(parents=True, exist_ok=True)
+            if MEETING_MODE:
+                # Both versions end up as files, whatever happens to the clipboard.
+                (MEETINGS_DIR / f"meeting_{stamp}_plain.txt").write_text(
+                    plain.strip() + "\n", encoding="utf-8")
+            _write_wav(wav, audio)
+            words_file.write_text(json.dumps(words, ensure_ascii=False), encoding="utf-8")
+            speakers = _ask_speaker_count() if DIARIZE_ASK_SPEAKERS else 0
+            print(f"🗣  Splitting by speaker — "
+                  f"{str(speakers) + ' speakers given' if speakers else 'speaker count left to the model'}",
+                  flush=True)
+            t0 = time.monotonic()
+            run = subprocess.run(
+                [str(Path(DIARIZE_PYTHON).expanduser()), str(DIARIZE_SCRIPT),
+                 "--wav", str(wav), "--words", str(words_file), "--out", str(out),
+                 "--seg", str(Path(DIARIZE_SEGMENTATION_MODEL).expanduser()),
+                 "--emb", str(Path(DIARIZE_EMBEDDING_MODEL).expanduser()),
+                 "--speakers", str(speakers), "--threshold", str(DIARIZE_AUTO_THRESHOLD),
+                 "--threads", str(DIARIZE_THREADS), "--label", DIARIZE_LABEL],
+                check=False, capture_output=True, text=True,
+                timeout=max(300, audio_sec * 2))
+            if run.returncode != 0 or not out.is_file():
+                why = (run.stderr.strip().splitlines() or ["no output"])[-1]
+                raise RuntimeError(why)
+            info = json.loads(run.stdout.strip().splitlines()[-1])
+            text = out.read_text(encoding="utf-8")
+            took = time.monotonic() - t0
+            done = {"last_file": str(out), "last_voices": info.get("speakers"),
+                    "last_failed": False}
+            if MEETING_MODE:
+                where = "file only, the clipboard keeps the plain text"
+            elif _pasteboard_change_count() == plain_change:
+                pyperclip.copy(text)
+                where = "on the clipboard, press Cmd+V"
+            else:
+                where = "clipboard left alone (you copied something meanwhile)"
+            print(f"🗣  By speaker: {info.get('speakers', '?')} voices, "
+                  f"{info.get('paragraphs', '?')} paragraphs in {took:.0f}s — {out} — {where}\n",
+                  flush=True)
+            _notify("Whisper Dictation",
+                    f"Transcript by speaker ready ({info.get('speakers', '?')} voices) — "
+                    f"{where}. File: {out.name}")
+        except Exception as e:
+            # The plain transcript must not be lost with the by-speaker one.
+            try:
+                MEETINGS_DIR.mkdir(parents=True, exist_ok=True)
+                plain_out = MEETINGS_DIR / f"meeting_{stamp}_plain.txt"
+                plain_out.write_text(plain.strip() + "\n", encoding="utf-8")
+                done = {"last_file": str(plain_out), "last_voices": None,
+                        "last_failed": True}
+                kept = f"plain transcript saved to {plain_out}"
+            except Exception:
+                kept = "plain transcript is on the clipboard only"
+            print(f"⚠️  Split by speaker failed ({type(e).__name__}: {e}) — {kept}\n", flush=True)
+            _notify("Whisper Dictation",
+                    "Split by speaker failed — the plain transcript is kept")
+        finally:
+            self._meeting = {"splitting": False, "seq": seq, **done}
+            for tmp in (wav, words_file):
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
 
     def _type_text(self, text):
         """Insert the transcript as keystrokes instead of Cmd+V; the clipboard
@@ -1300,7 +1561,11 @@ class IPCHandler(http.server.BaseHTTPRequestHandler):
                 "model": MODEL,
                 "language": LANGUAGE or "auto",
                 "stats_today": stats_today(),
+                **daemon.ui_status(),
             })
+        elif self.path == "/ui":
+            # Cheap enough to poll every second: no stats file is read.
+            self._respond(200, {"state": daemon.state, **daemon.ui_status()})
         elif self.path == "/stats/today":
             self._respond(200, stats_today())
         else:
@@ -1439,6 +1704,8 @@ start_audio_call_watchdog()
 prewarm_model()
 print(f"  Idle restart: {'disabled' if IDLE_RESTART_SEC <= 0 else str(IDLE_RESTART_SEC) + 's'}")
 print(f"  Keep-warm   : {'off' if KEEP_WARM_SEC <= 0 else str(KEEP_WARM_SEC) + 's (preroll ' + str(PREROLL_SEC) + 's)'}")
+print(f"  By speaker  : {_diarize_problem() or 'hands-free recordings of ' + str(DIARIZE_MIN_SEC) + 's and longer → ' + str(MEETINGS_DIR)}")
+print(f"  Meeting mode: {'hands-free recording → clipboard + files in ' + str(MEETINGS_DIR) + ', never pasted' if MEETING_MODE else 'off'}")
 print(f"  Auto-paste  : {'always' if AUTO_PASTE_MAX_SEC <= 0 else 'up to ' + str(AUTO_PASTE_MAX_SEC) + 's, longer → clipboard + notify'}")
 print(f"  Same-app    : {'paste only into the app where dictation started, else clipboard + notify' if PASTE_ONLY_IF_SAME_APP else 'off (always paste)'}")
 print(f"  Insert      : {'keystrokes into Chromium/Electron apps (Brave, Chrome, Slack…), Cmd+V elsewhere' if TYPE_INSTEAD_OF_PASTE == 'chromium' else 'keystrokes everywhere, clipboard untouched' if TYPE_INSTEAD_OF_PASTE == 'always' else 'Cmd+V everywhere'}")

@@ -491,6 +491,23 @@ The tray LaunchAgent restarts automatically if it crashes, but **not** when you 
 
 ---
 
+## Meeting mode (optional, macOS)
+
+Off by default; everything below is switched on in `local_settings.py` (see `local_settings.example.py`).
+
+- **`MEETING_MODE = True`** — the gesture decides what happens to the text, not the length of the recording.
+  Holding the hotkey is dictation: the text goes into the window. A hands-free recording (double tap of the
+  hotkey, the chord, or `/toggle`) is a meeting: the plain transcript goes to the clipboard and to
+  `meeting_<date>_<time>_plain.txt` in `MEETINGS_DIR`; nothing is pasted or typed.
+- **`DIARIZE_HANDS_FREE = True`** — hands-free recordings of `DIARIZE_MIN_SEC` (60 s) and longer are also split
+  by voice into `meeting_<date>_<time>.txt` (`[mm:ss] Speaker 2: ...`). `whisper_diarize.py` does this in a
+  separate process with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) and two local ONNX models
+  (speaker segmentation + speaker embedding), so the daemon itself never loads them and the hotkey is free
+  while it runs. Nothing is uploaded.
+- **`GET /ui`** on the IPC port returns the state, whether the recording is hands-free, its length and the
+  by-speaker progress — cheap enough to poll every second. `examples/hammerspoon_indicator.lua` uses it to
+  show a menu-bar indicator (idle / recording with a timer / transcribing / splitting) and notifications.
+
 ## File transcription
 
 Transcribe any audio or video file from the command line:

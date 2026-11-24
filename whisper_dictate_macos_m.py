@@ -90,6 +90,14 @@ IPC_PORT = 18765
 # still allows a manual restart. Set IDLE_RESTART_SEC > 0 to re-enable.
 IDLE_RESTART_SEC = 0
 WATCHDOG_PERIOD_SEC = 5
+# Sleep/wake guard. macOS can leave the process with a stale Core Audio session
+# after the Mac wakes: the mic opens without an error but delivers nothing, so
+# the first dictation after a sleep is lost before the stall check repairs it.
+# time.monotonic() is mach_absolute_time(), which does not advance while the
+# Mac sleeps; wall-clock time does. A jump of at least SLEEP_GAP_SEC in their
+# difference means the machine just woke, and PortAudio is reinitialised then,
+# while idle, before the next hotkey press. 0 switches the guard off.
+SLEEP_GAP_SEC = 30
 
 # Keep the mic stream "warm" for this many seconds after a dictation, and seed
 # each recording with a short pre-roll, so back-to-back dictations aren't clipped
@@ -207,6 +215,7 @@ try:
     AUTO_PAUSE_MEDIA = getattr(_local, "AUTO_PAUSE_MEDIA", AUTO_PAUSE_MEDIA)
     SPOKEN_PUNCTUATION = getattr(_local, "SPOKEN_PUNCTUATION", SPOKEN_PUNCTUATION)
     KEEP_WARM_SEC = getattr(_local, "KEEP_WARM_SEC", KEEP_WARM_SEC)
+    SLEEP_GAP_SEC = getattr(_local, "SLEEP_GAP_SEC", SLEEP_GAP_SEC)
     AUTO_PASTE_MAX_SEC = getattr(_local, "AUTO_PASTE_MAX_SEC", AUTO_PASTE_MAX_SEC)
     PASTE_ONLY_IF_SAME_APP = getattr(_local, "PASTE_ONLY_IF_SAME_APP", PASTE_ONLY_IF_SAME_APP)
     TYPE_INSTEAD_OF_PASTE = getattr(_local, "TYPE_INSTEAD_OF_PASTE", TYPE_INSTEAD_OF_PASTE)
@@ -946,6 +955,14 @@ class Daemon:
         except Exception as e:
             print(f"⚠️  audio reset failed: {e}", flush=True)
 
+    def _job_reset_after_wake(self):
+        """Worker job: reinitialise PortAudio after the Mac woke — only while
+        idle. Re-checks the state here, on the worker: a dictation may have
+        started while this job sat in the queue, and its mic must not be torn
+        down. That dictation is covered by the stall check instead."""
+        if self._state == "idle":
+            self._reset_audio()
+
     def _reinit_after_open_failure(self):
         """Worker thread only: rebuild PortAudio after an open was refused.
         There is no stream to tear down at this point, and no other PortAudio
@@ -1613,6 +1630,32 @@ def start_idle_watchdog():
     threading.Thread(target=loop, daemon=True).start()
 
 
+def start_sleepwake_watchdog():
+    """Reinitialise PortAudio after the Mac wakes, before the next hotkey press.
+
+    time.monotonic() does not advance while the machine sleeps; wall-clock time
+    does. A jump in their difference therefore means the Mac just came back
+    from sleep — the moment the Core Audio session inside this process can go
+    stale. The reset is silent: at idle in privacy mode the stream is already
+    closed, so no mic indicator lights up. Disabled when SLEEP_GAP_SEC <= 0."""
+    if SLEEP_GAP_SEC <= 0:
+        return
+    def loop():
+        drift = time.time() - time.monotonic()
+        while True:
+            time.sleep(WATCHDOG_PERIOD_SEC)
+            now_drift = time.time() - time.monotonic()
+            slept, drift = now_drift - drift, now_drift
+            if slept < SLEEP_GAP_SEC:
+                continue
+            print(f"😴 Woke after ~{slept / 60:.0f} min asleep — "
+                  f"reinitialising audio", flush=True)
+            # Queue the reset and move on: this thread never waits on
+            # PortAudio, and the job re-checks for idle on the worker.
+            daemon._audio_submit("reset-after-wake", daemon._job_reset_after_wake)
+    threading.Thread(target=loop, daemon=True).start()
+
+
 def start_keepwarm_watchdog():
     """Close the warm mic stream after KEEP_WARM_SEC of inactivity (privacy)."""
     if KEEP_WARM_SEC <= 0:
@@ -1700,6 +1743,7 @@ print(f"  Model   : {MODEL.split('/')[-1]}")
 start_ipc_server()
 start_idle_watchdog()
 start_keepwarm_watchdog()
+start_sleepwake_watchdog()
 start_audio_call_watchdog()
 prewarm_model()
 print(f"  Idle restart: {'disabled' if IDLE_RESTART_SEC <= 0 else str(IDLE_RESTART_SEC) + 's'}")
@@ -1709,6 +1753,7 @@ print(f"  Meeting mode: {'hands-free recording → clipboard + files in ' + str(
 print(f"  Auto-paste  : {'always' if AUTO_PASTE_MAX_SEC <= 0 else 'up to ' + str(AUTO_PASTE_MAX_SEC) + 's, longer → clipboard + notify'}")
 print(f"  Same-app    : {'paste only into the app where dictation started, else clipboard + notify' if PASTE_ONLY_IF_SAME_APP else 'off (always paste)'}")
 print(f"  Insert      : {'keystrokes into Chromium/Electron apps (Brave, Chrome, Slack…), Cmd+V elsewhere' if TYPE_INSTEAD_OF_PASTE == 'chromium' else 'keystrokes everywhere, clipboard untouched' if TYPE_INSTEAD_OF_PASTE == 'always' else 'Cmd+V everywhere'}")
+print(f"  Sleep guard : {'off' if SLEEP_GAP_SEC <= 0 else 'audio reinitialised after a sleep of ' + str(SLEEP_GAP_SEC) + 's or longer'}")
 print(f"  Audio guard : one worker thread owns the mic, restart if a call hangs > {AUDIO_CALL_TIMEOUT_SEC}s")
 print("=" * 45)
 print("  Ctrl+C to quit")

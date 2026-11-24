@@ -366,9 +366,11 @@ The mlx dictation script imports it on startup and applies any of these override
   Option) to start, tap the right Option once to stop. A notification confirms
   both. Recordings longer than `AUTO_PASTE_MAX_SEC` are left on the clipboard
   instead of being pasted. Tune with `TOGGLE_HOTKEY` / `DOUBLE_TAP_SEC`.
-- **Sleep recovery** — after the Mac sleeps the first dictation may come back empty;
-  the daemon then reinitialises Core Audio in-process and the next one works, without
-  needing a restart.
+- **Sleep recovery** — the daemon notices that the Mac has woken (wall-clock time
+  jumped ahead of the monotonic clock by `SLEEP_GAP_SEC`, 30 s by default) and
+  reinitialises Core Audio in-process while idle, before the next hotkey press. If a
+  dictation still comes back empty, the same reset runs then and the next one works,
+  without needing a restart.
 
 ---
 

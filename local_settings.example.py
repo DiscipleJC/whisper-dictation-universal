@@ -101,6 +101,13 @@ DOUBLE_TAP_MAX_HOLD_SEC = 0.3
 # DIARIZE_THREADS = 6
 # DIARIZE_ASK_SPEAKERS = False
 # DIARIZE_AUTO_THRESHOLD = 0.5
+# After the model's own count, voices that sound like the same person are
+# joined (one person often comes out as several "voices" on a laptop mic).
+# 0.9 = join when two voices agree that much; 0 turns the joining off.
+# DIARIZE_MERGE_SIM = 0.9
+# Keep the meeting audio next to the text for N days (to redo or tune the
+# split on the real recording); 0 = delete it as soon as the text is ready.
+# MEETING_KEEP_AUDIO_DAYS = 7
 # DIARIZE_LABEL = "Speaker"
 # MEETINGS_DIR = "~/Documents/whisper-meetings"
 

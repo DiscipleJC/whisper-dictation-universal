@@ -14,7 +14,10 @@ from disk, no network.
 --words is a JSON list of {"start": sec, "end": sec, "word": " text"} — what
 mlx-whisper returns with word_timestamps=True. --speakers 0 lets the
 clustering threshold decide how many voices there are (less reliable than a
-given number). The last line printed is a JSON summary for the daemon.
+given number); in that case the voices it found are then compared with each
+other and the ones that sound like the same person are joined (merge_voices,
+--merge-sim 0 turns that off). The last line printed is a JSON summary for the
+daemon.
 """
 import argparse
 import json
@@ -55,6 +58,118 @@ def diarize(audio, rate, seg, emb, speakers, threshold, threads):
     if rate != sd.sample_rate:
         raise ValueError(f"need {sd.sample_rate} Hz audio, got {rate}")
     return [(r.start, r.end, r.speaker) for r in sd.process(audio).sort_by_start_time()]
+
+
+def make_embedder(audio, rate, emb, threads, cap_sec=90.0):
+    """embed(spans) -> unit vector for the audio of [(start, end)], or None when
+    there is too little of it to describe a voice. One long stretch of a voice
+    describes it far more steadily than the short pieces the clustering sees."""
+    import numpy as np
+    import sherpa_onnx
+    ex = sherpa_onnx.SpeakerEmbeddingExtractor(
+        sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=emb, num_threads=threads))
+
+    def embed(spans):
+        chunks, n = [], 0
+        for s, e in spans:
+            c = audio[int(s * rate):int(e * rate)]
+            chunks.append(c)
+            n += len(c)
+            if n >= cap_sec * rate:
+                break
+        if n < MIN_EMBED_SEC * rate:
+            return None
+        stream = ex.create_stream()
+        stream.accept_waveform(rate, np.concatenate(chunks)[:int(cap_sec * rate)])
+        stream.input_finished()
+        v = np.array(ex.compute(stream), dtype=np.float64)
+        norm = np.linalg.norm(v)
+        return v / norm if norm else None
+    return embed
+
+
+MIN_EMBED_SEC = 2.0     # less audio than this does not describe a voice
+
+
+def _cos(a, b):
+    return float(sum(x * y for x, y in zip(a, b)))
+
+
+def merge_voices(turns, embed, merge_sim=0.9, small_sec=10.0, small_share=0.03,
+                 small_sim=0.6):
+    """Join the voices that are the same person. turns = [(start, end, id)].
+
+    The clustering inside sherpa-onnx compares short pieces of speech, and on
+    a laptop microphone it splits one person into several "voices" (measured
+    2026-11-20: two people came out as eleven). Here every voice is described
+    once more, by up to 90 s of its own audio, and then:
+
+      1. two voices whose descriptions agree by merge_sim or more are one
+         person (halves of the SAME voice agree by 0.95-0.99, different
+         people by 0.3-0.8 — measured on a real meeting), most alike first;
+      2. a voice that said very little (under small_sec seconds and under
+         small_share of all speech) goes to the voice it resembles most when
+         the likeness is at least small_sim — otherwise it stays, it may be a
+         person who spoke once;
+      3. a voice with too little audio to describe at all goes to whoever
+         spoke nearest in time.
+
+    Returns turns with the surviving ids. merge_sim <= 0 returns them as is."""
+    if merge_sim <= 0 or not turns:
+        return list(turns)
+    turns = list(turns)
+
+    def spans(vid):
+        return [(s, e) for s, e, sp in turns if sp == vid]
+
+    def dur(vid):
+        return sum(e - s for s, e in spans(vid))
+
+    def relabel(src, dst):
+        turns[:] = [(s, e, dst if sp == src else sp) for s, e, sp in turns]
+
+    ids = sorted({sp for _, _, sp in turns})
+    vec = {v: embed(spans(v)) for v in ids}
+
+    # 1 — the same person twice
+    while True:
+        known = [v for v in sorted({sp for _, _, sp in turns}) if vec.get(v) is not None]
+        best = None
+        for i, a in enumerate(known):
+            for b in known[i + 1:]:
+                sim = _cos(vec[a], vec[b])
+                if sim >= merge_sim and (best is None or sim > best[0]):
+                    best = (sim, a, b)
+        if best is None:
+            break
+        _, a, b = best
+        keep, gone = (a, b) if dur(a) >= dur(b) else (b, a)
+        relabel(gone, keep)
+        vec.pop(gone, None)
+        vec[keep] = embed(spans(keep))
+
+    # 2 and 3 — scraps
+    total = sum(e - s for s, e, _ in turns)
+    for v in sorted({sp for _, _, sp in turns}, key=dur):
+        others = [o for o in {sp for _, _, sp in turns} if o != v]
+        if not others:
+            break
+        d = dur(v)
+        if vec.get(v) is None:
+            mid = sum((s + e) / 2 for s, e in spans(v)) / len(spans(v))
+            near = min((t for t in turns if t[2] != v),
+                       key=lambda t: min(abs(mid - t[0]), abs(mid - t[1])))
+            relabel(v, near[2])
+            continue
+        if d >= small_sec or d >= small_share * total:
+            continue
+        big = [o for o in others if vec.get(o) is not None and dur(o) > d]
+        if not big:
+            continue
+        to = max(big, key=lambda o: _cos(vec[v], vec[o]))
+        if _cos(vec[v], vec[to]) >= small_sim:
+            relabel(v, to)
+    return sorted(turns, key=lambda t: t[0])
 
 
 def renumber(turns):
@@ -114,6 +229,7 @@ def main():
     ap.add_argument("--speakers", type=int, default=0)
     ap.add_argument("--threshold", type=float, default=0.5)
     ap.add_argument("--threads", type=int, default=6)
+    ap.add_argument("--merge-sim", type=float, default=0.9)
     ap.add_argument("--label", default="Speaker")
     a = ap.parse_args()
 
@@ -121,11 +237,17 @@ def main():
     audio, rate = read_wav(a.wav)
     with open(a.words, encoding="utf-8") as f:
         words = json.load(f)
-    turns = renumber(diarize(audio, rate, a.seg, a.emb, a.speakers, a.threshold, a.threads))
+    turns = diarize(audio, rate, a.seg, a.emb, a.speakers, a.threshold, a.threads)
+    found = len({t[2] for t in turns})
+    if a.speakers <= 0 and a.merge_sim > 0 and found > 1:
+        # The count was the model's own guess — join the voices that are one person.
+        turns = merge_voices(turns, make_embedder(audio, rate, a.emb, a.threads), a.merge_sim)
+    turns = renumber(turns)
     paras = paragraphs(words, turns, a.label)
     with open(a.out, "w", encoding="utf-8") as f:
         f.write("\n\n".join(paras) + "\n")
-    print(json.dumps({"speakers": len({t[2] for t in turns}), "paragraphs": len(paras),
+    print(json.dumps({"speakers": len({t[2] for t in turns}), "found": found,
+                      "paragraphs": len(paras),
                       "sec": round(time.monotonic() - t0, 1)}))
 
 

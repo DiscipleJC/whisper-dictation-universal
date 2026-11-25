@@ -181,7 +181,8 @@ DIARIZE_AUTO_THRESHOLD = 0.5
 # microphone (two people came out as eleven). After it, whisper_diarize.py
 # describes every voice by a long stretch of its audio and joins the ones that
 # agree by DIARIZE_MERGE_SIM or more (the same voice agrees with itself by
-# 0.95-0.99, different people by 0.3-0.86). 0 turns the joining off.
+# 0.95-0.99, different people by 0.3-0.86). 0 turns the joining off. The
+# numbers depend on the embedding model: see local_settings.example.py.
 DIARIZE_MERGE_SIM = 0.9
 DIARIZE_LABEL = "Speaker"
 MEETINGS_DIR = Path.home() / "Documents" / "whisper-meetings"

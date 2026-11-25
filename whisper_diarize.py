@@ -16,8 +16,9 @@ mlx-whisper returns with word_timestamps=True. --speakers 0 lets the
 clustering threshold decide how many voices there are (less reliable than a
 given number); in that case the voices it found are then compared with each
 other and the ones that sound like the same person are joined (merge_voices,
---merge-sim 0 turns that off). The last line printed is a JSON summary for the
-daemon.
+--merge-sim 0 turns that off), and a "voice" with hardly any words in it goes
+to whoever spoke nearest in time (fold_small_voices, --min-voice-share 0 turns
+that off). The last line printed is a JSON summary for the daemon.
 """
 import argparse
 import json
@@ -172,6 +173,43 @@ def merge_voices(turns, embed, merge_sim=0.9, small_sec=10.0, small_share=0.03,
     return sorted(turns, key=lambda t: t[0])
 
 
+def fold_small_voices(turns, words, min_share=0.03, min_words=30):
+    """Give the turns of a "voice" that said next to nothing to whoever spoke
+    nearest in time. turns = [(start, end, id)], words as in --words.
+
+    The segmentation marks quiet stretches (breathing, a keyboard, the room) as
+    speech, and they come out as voices of their own: long in seconds, almost
+    empty in words (measured 2026-11-25: 93 s with 27 words next to two people
+    with 906 and 171). Seconds cannot tell them from a person, words can — so a
+    voice with fewer than min_words words AND under min_share of all words is
+    folded, turn by turn, into the nearest turn of a voice that stays. The
+    price: someone who said one short sentence in the whole meeting is folded
+    too. min_share <= 0 turns this off; with one voice left nothing happens."""
+    if min_share <= 0 or not turns or not words:
+        return list(turns)
+    said = {}
+    for w in words:
+        sp = speaker_of(w, turns)
+        said[sp] = said.get(sp, 0) + 1
+    total = sum(said.values())
+    ids = {sp for _, _, sp in turns}
+    small = {v for v in ids
+             if said.get(v, 0) < min_words and said.get(v, 0) < min_share * total}
+    keep = [t for t in turns if t[2] not in small]
+    if not small or not keep:
+        return list(turns)
+
+    def gap(a, b):
+        return max(0.0, max(a[0], b[0]) - min(a[1], b[1]))
+
+    out = []
+    for t in turns:
+        if t[2] in small:
+            t = (t[0], t[1], min(keep, key=lambda k: gap(t, k))[2])
+        out.append(t)
+    return sorted(out, key=lambda t: t[0])
+
+
 def renumber(turns):
     """Number the voices 1, 2, 3… in the order they first speak — the raw
     cluster ids have gaps and no meaning."""
@@ -230,6 +268,7 @@ def main():
     ap.add_argument("--threshold", type=float, default=0.5)
     ap.add_argument("--threads", type=int, default=6)
     ap.add_argument("--merge-sim", type=float, default=0.9)
+    ap.add_argument("--min-voice-share", type=float, default=0.03)
     ap.add_argument("--label", default="Speaker")
     a = ap.parse_args()
 
@@ -242,6 +281,9 @@ def main():
     if a.speakers <= 0 and a.merge_sim > 0 and found > 1:
         # The count was the model's own guess — join the voices that are one person.
         turns = merge_voices(turns, make_embedder(audio, rate, a.emb, a.threads), a.merge_sim)
+    if a.speakers <= 0:
+        # ...and drop the "voices" that are quiet stretches with hardly a word.
+        turns = fold_small_voices(turns, words, a.min_voice_share)
     turns = renumber(turns)
     paras = paragraphs(words, turns, a.label)
     with open(a.out, "w", encoding="utf-8") as f:

@@ -508,6 +508,30 @@ Off by default; everything below is switched on in `local_settings.py` (see `loc
   by-speaker progress — cheap enough to poll every second. `examples/hammerspoon_indicator.lua` uses it to
   show a menu-bar indicator (idle / recording with a timer / transcribing / splitting) and notifications.
 
+### Menu-bar indicator (optional)
+
+The indicator is not part of the daemon: it is a script for [Hammerspoon](https://www.hammerspoon.org/), a
+separate free app, and is not installed by `whisper_install.py`. To set it up:
+
+```bash
+brew install --cask hammerspoon
+mkdir -p ~/.hammerspoon
+cp examples/hammerspoon_indicator.lua ~/.hammerspoon/init.lua
+open -a Hammerspoon
+```
+
+If you already have a `~/.hammerspoon/init.lua`, do not overwrite it: copy the file as
+`~/.hammerspoon/whisper_indicator.lua` and add `require("whisper_indicator")` to your own `init.lua`, then
+choose **Reload Config** in Hammerspoon.
+
+- A 🎙 appears in the menu bar and turns into 🔴 with a timer while recording. Its menu starts and stops a
+  hands-free recording, copies the last meeting (by speaker or plain text) and opens the meetings folder.
+- The script needs no Accessibility permission. While that permission is not granted, Hammerspoon opens its
+  Preferences window on launch; it can simply be closed.
+- Notifications ("Recording started", "By speaker ready" …) are shown only if Hammerspoon is allowed in
+  System Settings → Notifications. The menu-bar icon works without them.
+- The script only reads `http://127.0.0.1:18765/ui`, so the daemon must be running; nothing leaves the Mac.
+
 ## File transcription
 
 Transcribe any audio or video file from the command line:

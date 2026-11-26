@@ -1451,14 +1451,21 @@ class Daemon:
         finally:
             self._meeting = {"splitting": False, "seq": seq, **done}
             for tmp in (wav, words_file):
-                try:
-                    if MEETING_KEEP_AUDIO_DAYS > 0:
+                if MEETING_KEEP_AUDIO_DAYS > 0:
+                    try:
                         # ".meeting_x.wav" -> "kept-audio/meeting_x.wav": kept
                         # for tuning the split, in a folder only the daemon fills
                         KEPT_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
                         tmp.rename(KEPT_AUDIO_DIR / tmp.name[1:])
-                    else:
-                        tmp.unlink()
+                        continue
+                    except OSError as e:
+                        # A hidden temp file outside kept-audio would never be
+                        # purged: say so and delete it instead.
+                        if tmp.exists():
+                            print(f"⚠️  Could not keep {tmp.name[1:]} in "
+                                  f"{KEPT_AUDIO_DIR} ({e}) — deleted", flush=True)
+                try:
+                    tmp.unlink()
                 except OSError:
                     pass
             _purge_meeting_audio()

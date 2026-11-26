@@ -101,6 +101,20 @@ def _gap(a, b):
     return max(0.0, max(a[0], b[0]) - min(a[1], b[1]))
 
 
+def _alone(spans, others):
+    """The parts of spans [(start, end)] that no span in others covers: where
+    this voice speaks alone. Speech over someone else's mixes both voices in
+    one microphone signal and would make two people's descriptions alike."""
+    out = []
+    for s, e in spans:
+        pieces = [(s, e)]
+        for os_, oe in others:
+            pieces = [p for a, b in pieces
+                      for p in ((a, min(b, os_)), (max(a, oe), b)) if p[1] > p[0]]
+        out.extend(pieces)
+    return sorted(out)
+
+
 def merge_voices(turns, embed, merge_sim=0.9, small_sec=10.0, small_share=0.03,
                  small_sim=0.6):
     """Join the voices that are the same person. turns = [(start, end, id)].
@@ -117,8 +131,13 @@ def merge_voices(turns, embed, merge_sim=0.9, small_sec=10.0, small_share=0.03,
          small_share of all speech) goes to the voice it resembles most when
          the likeness is at least small_sim — otherwise it stays, it may be a
          person who spoke once;
-      3. a voice with too little audio to describe at all goes to whoever
-         spoke nearest in time.
+      3. a voice with too little audio to describe at all (under
+         MIN_EMBED_SEC in all) goes, turn by turn, to whoever spoke nearest
+         in time. A longer voice that has too little speech of its own,
+         without anyone over it, is left as it is.
+
+    Voices are described only by the speech where they talk alone, so two
+    people talking over each other do not look like one.
 
     Returns turns with the surviving ids. merge_sim <= 0 returns them as is."""
     if merge_sim <= 0 or not turns:
@@ -135,7 +154,12 @@ def merge_voices(turns, embed, merge_sim=0.9, small_sec=10.0, small_share=0.03,
         turns[:] = [(s, e, dst if sp == src else sp) for s, e, sp in turns]
 
     ids = sorted({sp for _, _, sp in turns})
-    vec = {v: embed(spans(v)) for v in ids}
+    def describe(vid):
+        # Only where this voice speaks alone (see _alone); None when that is
+        # too little, and such a voice is then not joined on likeness.
+        return embed(_alone(spans(vid), [(s, e) for s, e, sp in turns if sp != vid]))
+
+    vec = {v: describe(v) for v in ids}
 
     # 1 — the same person twice
     while True:
@@ -152,7 +176,7 @@ def merge_voices(turns, embed, merge_sim=0.9, small_sec=10.0, small_share=0.03,
         keep, gone = (a, b) if dur(a) >= dur(b) else (b, a)
         relabel(gone, keep)
         vec.pop(gone, None)
-        vec[keep] = embed(spans(keep))
+        vec[keep] = describe(keep)
 
     # 2 and 3 — scraps
     total = sum(e - s for s, e, _ in turns)
@@ -161,7 +185,7 @@ def merge_voices(turns, embed, merge_sim=0.9, small_sec=10.0, small_share=0.03,
         if not others:
             break
         d = dur(v)
-        if vec.get(v) is None:
+        if vec.get(v) is None and d < MIN_EMBED_SEC:
             # Each turn on its own, to the turn nearest to IT: one average
             # time for turns far apart could land next to neither. The gap is
             # 0 for a turn that overlaps or lies inside another one.
@@ -170,6 +194,8 @@ def merge_voices(turns, embed, merge_sim=0.9, small_sec=10.0, small_share=0.03,
                         (t[0], t[1], min(rest, key=lambda k: _gap(t, k))[2])
                         for t in turns]
             continue
+        if vec.get(v) is None:
+            continue  # long enough to be a person, but no clean speech to compare
         if d >= small_sec or d >= small_share * total:
             continue
         big = [o for o in others if vec.get(o) is not None and dur(o) > d]

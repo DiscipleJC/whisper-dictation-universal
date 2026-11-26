@@ -199,9 +199,10 @@ MEETINGS_DIR = Path.home() / "Documents" / "whisper-meetings"
 # says otherwise, and the by-speaker text overwrites the clipboard.
 MEETING_MODE = False
 # Keep the audio of a by-speaker meeting (meeting_<stamp>.wav and
-# .words.json next to the text) for this many days, so that the split can be
-# redone or tuned on the real recording; older ones are deleted on the next
-# meeting and at start. 0 = delete the audio as soon as the text is ready.
+# .words.json in the kept-audio folder inside MEETINGS_DIR) for this many
+# days, so that the split can be redone or tuned on the real recording; older
+# ones are deleted on the next meeting and at start. 0 = delete the audio as
+# soon as the text is ready; recordings kept earlier are then left alone.
 MEETING_KEEP_AUDIO_DAYS = 0
 
 INITIAL_PROMPT = (
@@ -243,6 +244,10 @@ try:
         INITIAL_PROMPT = f"{INITIAL_PROMPT} {_extra_prompt}"
 except ImportError:
     pass
+
+# Kept meeting audio lives in its own folder, which only the daemon fills, so
+# the clean-up can never delete a file the user put into MEETINGS_DIR.
+KEPT_AUDIO_DIR = MEETINGS_DIR / "kept-audio"
 
 
 # ── Clipboard snapshot/restore ────────────────────────────────────────────────
@@ -592,14 +597,19 @@ def _ask_speaker_count(timeout=120):
 
 def _purge_meeting_audio(days=None, now=None):
     """Delete the kept meeting audio (meeting_*.wav, meeting_*.words.json in
-    MEETINGS_DIR) older than MEETING_KEEP_AUDIO_DAYS. Texts are never touched.
+    KEPT_AUDIO_DIR, which only the daemon fills) older than
+    MEETING_KEEP_AUDIO_DAYS. Nothing else in MEETINGS_DIR is ever touched.
+    With keeping off (days <= 0) nothing is deleted: switching the setting
+    off stops new audio being kept, it does not wipe what was kept before.
     Returns how many files went."""
     days = MEETING_KEEP_AUDIO_DAYS if days is None else days
+    if days <= 0:
+        return 0
     now = time.time() if now is None else now
     gone = 0
     try:
         for pattern in ("meeting_*.wav", "meeting_*.words.json"):
-            for f in MEETINGS_DIR.glob(pattern):
+            for f in KEPT_AUDIO_DIR.glob(pattern):
                 try:
                     if now - f.stat().st_mtime > days * 86400:
                         f.unlink()
@@ -1443,8 +1453,10 @@ class Daemon:
             for tmp in (wav, words_file):
                 try:
                     if MEETING_KEEP_AUDIO_DAYS > 0:
-                        # ".meeting_x.wav" -> "meeting_x.wav": kept for tuning the split
-                        tmp.rename(tmp.with_name(tmp.name[1:]))
+                        # ".meeting_x.wav" -> "kept-audio/meeting_x.wav": kept
+                        # for tuning the split, in a folder only the daemon fills
+                        KEPT_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+                        tmp.rename(KEPT_AUDIO_DIR / tmp.name[1:])
                     else:
                         tmp.unlink()
                 except OSError:
@@ -1753,6 +1765,14 @@ print(f"  Voices      : {'joined when alike by ' + str(DIARIZE_MERGE_SIM) + ' or
       f"; meeting audio {'kept ' + str(MEETING_KEEP_AUDIO_DAYS) + ' days' if MEETING_KEEP_AUDIO_DAYS > 0 else 'deleted after the split'}")
 if _purge_meeting_audio():
     print("  (old meeting audio deleted)")
+elif MEETING_KEEP_AUDIO_DAYS <= 0:
+    try:
+        _left = len(list(KEPT_AUDIO_DIR.glob("meeting_*.wav")))
+    except OSError:
+        _left = 0
+    if _left:
+        print(f"  ({_left} kept meeting recordings left in {KEPT_AUDIO_DIR} — "
+              f"keeping is off, delete them by hand when done)")
 print(f"  Meeting mode: {'hands-free recording → clipboard + files in ' + str(MEETINGS_DIR) + ', never pasted' if MEETING_MODE else 'off'}")
 print(f"  Auto-paste  : {'always' if AUTO_PASTE_MAX_SEC <= 0 else 'up to ' + str(AUTO_PASTE_MAX_SEC) + 's, longer → clipboard + notify'}")
 print(f"  Same-app    : {'paste only into the app where dictation started, else clipboard + notify' if PASTE_ONLY_IF_SAME_APP else 'off (always paste)'}")

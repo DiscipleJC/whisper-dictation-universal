@@ -111,8 +111,9 @@ DOUBLE_TAP_MAX_HOLD_SEC = 0.3
 # After the joining, a "voice" with fewer than 30 words and under 3% of all
 # words (a quiet stretch taken for speech) goes to whoever spoke nearest in time.
 # DIARIZE_MERGE_SIM = 0.9
-# Keep the meeting audio next to the text for N days (to redo or tune the
-# split on the real recording); 0 = delete it as soon as the text is ready.
+# Keep the meeting audio for N days in MEETINGS_DIR/kept-audio (to redo or tune
+# the split on the real recording); 0 = delete it as soon as the text is ready
+# (recordings kept earlier are then left alone, delete them by hand).
 # MEETING_KEEP_AUDIO_DAYS = 7
 # DIARIZE_LABEL = "Speaker"
 # MEETINGS_DIR = "~/Documents/whisper-meetings"

@@ -96,6 +96,11 @@ def _cos(a, b):
     return float(sum(x * y for x, y in zip(a, b)))
 
 
+def _gap(a, b):
+    """Seconds between two turns (start, end, ...); 0 if they overlap."""
+    return max(0.0, max(a[0], b[0]) - min(a[1], b[1]))
+
+
 def merge_voices(turns, embed, merge_sim=0.9, small_sec=10.0, small_share=0.03,
                  small_sim=0.6):
     """Join the voices that are the same person. turns = [(start, end, id)].
@@ -157,10 +162,13 @@ def merge_voices(turns, embed, merge_sim=0.9, small_sec=10.0, small_share=0.03,
             break
         d = dur(v)
         if vec.get(v) is None:
-            mid = sum((s + e) / 2 for s, e in spans(v)) / len(spans(v))
-            near = min((t for t in turns if t[2] != v),
-                       key=lambda t: min(abs(mid - t[0]), abs(mid - t[1])))
-            relabel(v, near[2])
+            # Each turn on its own, to the turn nearest to IT: one average
+            # time for turns far apart could land next to neither. The gap is
+            # 0 for a turn that overlaps or lies inside another one.
+            rest = [t for t in turns if t[2] != v]
+            turns[:] = [t if t[2] != v else
+                        (t[0], t[1], min(rest, key=lambda k: _gap(t, k))[2])
+                        for t in turns]
             continue
         if d >= small_sec or d >= small_share * total:
             continue
@@ -199,13 +207,10 @@ def fold_small_voices(turns, words, min_share=0.03, min_words=30):
     if not small or not keep:
         return list(turns)
 
-    def gap(a, b):
-        return max(0.0, max(a[0], b[0]) - min(a[1], b[1]))
-
     out = []
     for t in turns:
         if t[2] in small:
-            t = (t[0], t[1], min(keep, key=lambda k: gap(t, k))[2])
+            t = (t[0], t[1], min(keep, key=lambda k: _gap(t, k))[2])
         out.append(t)
     return sorted(out, key=lambda t: t[0])
 

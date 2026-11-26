@@ -185,6 +185,13 @@ DIARIZE_EMBEDDING_MODEL = ""
 DIARIZE_THREADS = 6
 DIARIZE_ASK_SPEAKERS = False
 DIARIZE_AUTO_THRESHOLD = 0.5
+# The model's own count splits one person into several "voices" on a laptop
+# microphone (two people came out as eleven). After it, whisper_diarize.py
+# describes every voice by a long stretch of its audio and joins the ones that
+# agree by DIARIZE_MERGE_SIM or more (the same voice agrees with itself by
+# 0.95-0.99, different people by 0.3-0.86). 0 turns the joining off. The
+# numbers depend on the embedding model: see local_settings.example.py.
+DIARIZE_MERGE_SIM = 0.9
 DIARIZE_LABEL = "Speaker"
 MEETINGS_DIR = Path.home() / "Documents" / "whisper-meetings"
 
@@ -199,6 +206,12 @@ MEETINGS_DIR = Path.home() / "Documents" / "whisper-meetings"
 # are pasted like dictation unless AUTO_PASTE_MAX_SEC or the by-speaker step
 # says otherwise, and the by-speaker text overwrites the clipboard.
 MEETING_MODE = False
+# Keep the audio of a by-speaker meeting (meeting_<stamp>.wav and
+# .words.json in the kept-audio folder inside MEETINGS_DIR) for this many
+# days, so that the split can be redone or tuned on the real recording; older
+# ones are deleted on the next meeting and at start. 0 = delete the audio as
+# soon as the text is ready; recordings kept earlier are then left alone.
+MEETING_KEEP_AUDIO_DAYS = 0
 
 INITIAL_PROMPT = (
     "Claude Code, OpenAI, Python, JavaScript, TypeScript, GitHub, Docker, "
@@ -231,6 +244,8 @@ try:
     DIARIZE_ASK_SPEAKERS = getattr(_local, "DIARIZE_ASK_SPEAKERS", DIARIZE_ASK_SPEAKERS)
     DIARIZE_AUTO_THRESHOLD = getattr(_local, "DIARIZE_AUTO_THRESHOLD", DIARIZE_AUTO_THRESHOLD)
     DIARIZE_LABEL = getattr(_local, "DIARIZE_LABEL", DIARIZE_LABEL)
+    DIARIZE_MERGE_SIM = getattr(_local, "DIARIZE_MERGE_SIM", DIARIZE_MERGE_SIM)
+    MEETING_KEEP_AUDIO_DAYS = getattr(_local, "MEETING_KEEP_AUDIO_DAYS", MEETING_KEEP_AUDIO_DAYS)
     MEETINGS_DIR = Path(getattr(_local, "MEETINGS_DIR", MEETINGS_DIR)).expanduser()
     MEETING_MODE = getattr(_local, "MEETING_MODE", MEETING_MODE)
     _extra_prompt = getattr(_local, "EXTRA_PROMPT", "")
@@ -238,6 +253,10 @@ try:
         INITIAL_PROMPT = f"{INITIAL_PROMPT} {_extra_prompt}"
 except ImportError:
     pass
+
+# Kept meeting audio lives in its own folder, which only the daemon fills, so
+# the clean-up can never delete a file the user put into MEETINGS_DIR.
+KEPT_AUDIO_DIR = MEETINGS_DIR / "kept-audio"
 
 
 # ── Clipboard snapshot/restore ────────────────────────────────────────────────
@@ -583,6 +602,32 @@ def _ask_speaker_count(timeout=120):
         return _parse_speaker_count(out.stdout.strip())
     except Exception:
         return 0
+
+
+def _purge_meeting_audio(days=None, now=None):
+    """Delete the kept meeting audio (meeting_*.wav, meeting_*.words.json in
+    KEPT_AUDIO_DIR, which only the daemon fills) older than
+    MEETING_KEEP_AUDIO_DAYS. Nothing else in MEETINGS_DIR is ever touched.
+    With keeping off (days <= 0) nothing is deleted: switching the setting
+    off stops new audio being kept, it does not wipe what was kept before.
+    Returns how many files went."""
+    days = MEETING_KEEP_AUDIO_DAYS if days is None else days
+    if days <= 0:
+        return 0
+    now = time.time() if now is None else now
+    gone = 0
+    try:
+        for pattern in ("meeting_*.wav", "meeting_*.words.json"):
+            for f in KEPT_AUDIO_DIR.glob(pattern):
+                try:
+                    if now - f.stat().st_mtime > days * 86400:
+                        f.unlink()
+                        gone += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return gone
 
 
 def _write_wav(path, audio):
@@ -1445,7 +1490,8 @@ class Daemon:
                  "--seg", str(Path(DIARIZE_SEGMENTATION_MODEL).expanduser()),
                  "--emb", str(Path(DIARIZE_EMBEDDING_MODEL).expanduser()),
                  "--speakers", str(speakers), "--threshold", str(DIARIZE_AUTO_THRESHOLD),
-                 "--threads", str(DIARIZE_THREADS), "--label", DIARIZE_LABEL],
+                 "--threads", str(DIARIZE_THREADS), "--label", DIARIZE_LABEL,
+                 "--merge-sim", str(DIARIZE_MERGE_SIM)],
                 check=False, capture_output=True, text=True,
                 timeout=max(300, audio_sec * 2))
             if run.returncode != 0 or not out.is_file():
@@ -1463,7 +1509,10 @@ class Daemon:
                 where = "on the clipboard, press Cmd+V"
             else:
                 where = "clipboard left alone (you copied something meanwhile)"
-            print(f"🗣  By speaker: {info.get('speakers', '?')} voices, "
+            found = info.get("found")
+            joined = (f" (the model heard {found}, the same voices were joined)"
+                      if found and found != info.get("speakers") else "")
+            print(f"🗣  By speaker: {info.get('speakers', '?')} voices{joined}, "
                   f"{info.get('paragraphs', '?')} paragraphs in {took:.0f}s — {out} — {where}\n",
                   flush=True)
             _notify("Whisper Dictation",
@@ -1486,10 +1535,24 @@ class Daemon:
         finally:
             self._meeting = {"splitting": False, "seq": seq, **done}
             for tmp in (wav, words_file):
+                if MEETING_KEEP_AUDIO_DAYS > 0:
+                    try:
+                        # ".meeting_x.wav" -> "kept-audio/meeting_x.wav": kept
+                        # for tuning the split, in a folder only the daemon fills
+                        KEPT_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+                        tmp.rename(KEPT_AUDIO_DIR / tmp.name[1:])
+                        continue
+                    except OSError as e:
+                        # A hidden temp file outside kept-audio would never be
+                        # purged: say so and delete it instead.
+                        if tmp.exists():
+                            print(f"⚠️  Could not keep {tmp.name[1:]} in "
+                                  f"{KEPT_AUDIO_DIR} ({e}) — deleted", flush=True)
                 try:
                     tmp.unlink()
                 except OSError:
                     pass
+            _purge_meeting_audio()
 
     def _type_text(self, text):
         """Insert the transcript as keystrokes instead of Cmd+V; the clipboard
@@ -1818,6 +1881,18 @@ prewarm_model()
 print(f"  Idle restart: {'disabled' if IDLE_RESTART_SEC <= 0 else str(IDLE_RESTART_SEC) + 's'}")
 print(f"  Keep-warm   : {'off' if KEEP_WARM_SEC <= 0 else str(KEEP_WARM_SEC) + 's (preroll ' + str(PREROLL_SEC) + 's)'}")
 print(f"  By speaker  : {_diarize_problem() or 'hands-free recordings of ' + str(DIARIZE_MIN_SEC) + 's and longer → ' + str(MEETINGS_DIR)}")
+print(f"  Voices      : {'joined when alike by ' + str(DIARIZE_MERGE_SIM) + ' or more' if DIARIZE_MERGE_SIM > 0 else 'as the model counts them (DIARIZE_MERGE_SIM = 0)'}"
+      f"; meeting audio {'kept ' + str(MEETING_KEEP_AUDIO_DAYS) + ' days' if MEETING_KEEP_AUDIO_DAYS > 0 else 'deleted after the split'}")
+if _purge_meeting_audio():
+    print("  (old meeting audio deleted)")
+elif MEETING_KEEP_AUDIO_DAYS <= 0:
+    try:
+        _left = len(list(KEPT_AUDIO_DIR.glob("meeting_*.wav")))
+    except OSError:
+        _left = 0
+    if _left:
+        print(f"  ({_left} kept meeting recordings left in {KEPT_AUDIO_DIR} — "
+              f"keeping is off, delete them by hand when done)")
 print(f"  Meeting mode: {'hands-free recording → clipboard + files in ' + str(MEETINGS_DIR) + ', never pasted' if MEETING_MODE else 'off'}")
 print(f"  Auto-paste  : {'always' if AUTO_PASTE_MAX_SEC <= 0 else 'up to ' + str(AUTO_PASTE_MAX_SEC) + 's, longer → clipboard + notify'}")
 print(f"  Same-app    : {'paste only into the app where dictation started, else clipboard + notify' if PASTE_ONLY_IF_SAME_APP else 'off (always paste)'}")

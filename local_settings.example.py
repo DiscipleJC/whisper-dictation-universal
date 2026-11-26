@@ -101,6 +101,20 @@ DOUBLE_TAP_MAX_HOLD_SEC = 0.3
 # DIARIZE_THREADS = 6
 # DIARIZE_ASK_SPEAKERS = False
 # DIARIZE_AUTO_THRESHOLD = 0.5
+# After the model's own count, voices that sound like the same person are
+# joined (one person often comes out as several "voices" on a laptop mic).
+# 0.9 = join when two voices agree that much; 0 turns the joining off.
+# The right number depends on the embedding model: 0.9 is the careful default;
+# with nemo_en_titanet_small.onnx different people agree by about 0.4 and 0.75
+# works, with wespeaker_en_voxceleb_resnet34_LM.onnx different people agree by
+# 0.84-0.89 on a laptop mic and no number separates them well.
+# After the joining, a "voice" with fewer than 30 words and under 3% of all
+# words (a quiet stretch taken for speech) goes to whoever spoke nearest in time.
+# DIARIZE_MERGE_SIM = 0.9
+# Keep the meeting audio for N days in MEETINGS_DIR/kept-audio (to redo or tune
+# the split on the real recording); 0 = delete it as soon as the text is ready
+# (recordings kept earlier are then left alone, delete them by hand).
+# MEETING_KEEP_AUDIO_DAYS = 7
 # DIARIZE_LABEL = "Speaker"
 # MEETINGS_DIR = "~/Documents/whisper-meetings"
 

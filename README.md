@@ -507,7 +507,10 @@ Off by default; everything below is switched on in `local_settings.py` (see `loc
   by voice into `meeting_<date>_<time>.txt` (`[mm:ss] Speaker 2: ...`). `whisper_diarize.py` does this in a
   separate process with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) and two local ONNX models
   (speaker segmentation + speaker embedding), so the daemon itself never loads them and the hotkey is free
-  while it runs. Nothing is uploaded.
+  while it runs. Nothing is uploaded. When the speaker count is left to the model, voices that sound like the
+  same person are joined (`DIARIZE_MERGE_SIM`) and a "voice" with hardly any words goes to whoever spoke
+  nearest in time. On a laptop microphone `nemo_en_titanet_small.onnx` with `DIARIZE_MERGE_SIM = 0.75` told
+  people apart better than `wespeaker_en_voxceleb_resnet34_LM.onnx` (measured on two recordings).
 - **`GET /ui`** on the IPC port returns the state, whether the recording is hands-free, its length and the
   by-speaker progress — cheap enough to poll every second. `examples/hammerspoon_indicator.lua` uses it to
   show a menu-bar indicator (idle / recording with a timer / transcribing / splitting) and notifications.

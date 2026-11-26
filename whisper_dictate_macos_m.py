@@ -788,9 +788,12 @@ class Daemon:
         # or a notification.
         self._tap_pending = None
         self._tap_lock = threading.Lock()
-        # Total time asleep at the last wake check (see _take_wake). Read and
-        # written only by the audio worker.
-        self._sleep_seen = _slept_total()
+        # A wake that still needs an audio reset: seconds asleep, 0 = none.
+        # Set by the sleep/wake watchdog, taken by the audio worker (see
+        # _take_wake); _wake_queued says a reset job is already on the queue.
+        self._wake_pending = 0.0
+        self._wake_queued = False
+        self._wake_lock = threading.Lock()
 
     @property
     def state(self):
@@ -971,17 +974,28 @@ class Daemon:
         except Exception as e:
             print(f"⚠️  audio reset failed: {e}", flush=True)
 
+    def note_wake(self, gap):
+        """Sleep/wake watchdog: the Mac just slept for gap seconds (one sleep,
+        already at least SLEEP_GAP_SEC). The wake stays pending until the audio
+        worker resets for it. Returns True if a reset job should be queued —
+        the daemon is idle and no such job is waiting yet."""
+        with self._wake_lock:
+            if gap:
+                self._wake_pending = max(self._wake_pending, gap)
+            if (self._wake_pending and not self._wake_queued
+                    and self._state == "idle"):
+                self._wake_queued = True
+                return True
+            return False
+
     def _take_wake(self):
-        """Worker thread only. Seconds the Mac slept since the last call, if
-        that is SLEEP_GAP_SEC or more, else 0. Only the worker takes a wake,
-        so exactly one of the two places that act on it — the idle job below
-        and the mic open in _job_start_capture — resets the audio, whichever
-        runs first after the wake."""
-        if SLEEP_GAP_SEC <= 0:
-            return 0.0
-        now = _slept_total()
-        gap, self._sleep_seen = now - self._sleep_seen, now
-        return gap if gap >= SLEEP_GAP_SEC else 0.0
+        """Worker thread only. Seconds asleep of a wake still waiting for its
+        reset, else 0; the wake is cleared. Exactly one of the two places that
+        act on it — the idle job below and the mic open in _job_start_capture
+        — resets the audio, whichever runs first after the wake."""
+        with self._wake_lock:
+            gap, self._wake_pending = self._wake_pending, 0.0
+            return gap
 
     def _reset_after_wake(self, gap):
         """Worker thread only."""
@@ -993,9 +1007,12 @@ class Daemon:
         """Worker job, queued by the sleep/wake watchdog: reinitialise PortAudio
         after the Mac woke — only while idle. Re-checks the state here, on the
         worker: a dictation may have started while this job sat in the queue,
-        and its mic must not be torn down; the wake is then left for
+        and its mic must not be torn down; the wake then stays pending, for
+        the watchdog to queue this job again once the daemon is idle, or for
         _job_start_capture of the next recording. With privacy mode off the
         persistent stream is opened again, so pre-roll keeps working."""
+        with self._wake_lock:
+            self._wake_queued = False
         if self._state != "idle":
             return
         gap = self._take_wake()
@@ -1685,24 +1702,26 @@ def start_sleepwake_watchdog():
 
     The total time asleep (see _slept_total) jumps when the Mac comes back
     from sleep — the moment the Core Audio session inside this process can go
-    stale. This thread only notices the jump and queues a job; the worker
-    takes the wake itself, so a hotkey press queued first resets the audio in
-    its own mic open instead. The reset is silent: at idle in privacy mode the
+    stale. The jump is measured poll by poll: the thread does not run while
+    the Mac sleeps, so one poll sees one sleep, and short sleeps never add up
+    to a long one. A long one is noted as a pending wake; this thread queues
+    the reset job while the daemon is idle and keeps doing so on later polls
+    until the worker has reset. A hotkey press that comes first resets in its
+    own mic open instead. The reset is silent: at idle in privacy mode the
     stream is already closed, so no mic indicator lights up. Disabled when
     SLEEP_GAP_SEC <= 0."""
     if SLEEP_GAP_SEC <= 0:
         return
     def loop():
-        seen = _slept_total()
+        prev = _slept_total()
         while True:
             time.sleep(WATCHDOG_PERIOD_SEC)
             now = _slept_total()
-            if now - seen < SLEEP_GAP_SEC:
-                continue
-            seen = now
+            gap, prev = now - prev, now
             # Queue the reset and move on: this thread never waits on
             # PortAudio, and the job re-checks for idle on the worker.
-            daemon._audio_submit("reset-after-wake", daemon._job_reset_after_wake)
+            if daemon.note_wake(gap if gap >= SLEEP_GAP_SEC else 0.0):
+                daemon._audio_submit("reset-after-wake", daemon._job_reset_after_wake)
     threading.Thread(target=loop, daemon=True).start()
 
 
